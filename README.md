@@ -27,14 +27,14 @@ Em uma tarde voltaram **mais de 35 GB** sem apagar nada importante. Esta ferrame
 
 Abra o Claude Code, o Codex ou o Cursor e cole:
 
-> Instale o disco-livre pra mim: https://github.com/SEU-USUARIO/disco-livre — siga o AGENTS.md do repositório.
+> Instale o disco-livre pra mim: https://github.com/Willclaf/disco-livre — siga o AGENTS.md do repositório.
 
 A IA baixa o projeto, pergunta a sua meta de espaço, instala tudo e confere se funcionou. Você só aprova o que ela pedir.
 
 ### Jeito manual: pelo Terminal
 
 ```bash
-git clone https://github.com/SEU-USUARIO/disco-livre.git
+git clone https://github.com/Willclaf/disco-livre.git
 cd disco-livre
 ./install.sh
 ```
