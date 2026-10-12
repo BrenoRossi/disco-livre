@@ -39,7 +39,9 @@ kb_antigos() {
   find "$1" -type f -mtime +$LOG_DIAS -print0 2>/dev/null | xargs -0 stat -f%z 2>/dev/null |
     awk '{s+=$1} END{printf "%d\n", s/1024}'
 }
-humano()   { awk -v k="${1:-0}" 'BEGIN{ if(k<0)k=-k; if(k>=1048576) printf "%.1f GB", k/1048576; else if(k>=1024) printf "%.0f MB", k/1024; else printf "%d KB", k }'; }
+# GB/MB decimais, igual ao Finder e aos Ajustes do Sistema
+humano()   { awk -v k="${1:-0}" 'BEGIN{ if(k<0)k=-k; b=k*1024; if(b>=1e9) printf "%.1f GB", b/1e9; else if(b>=1e6) printf "%.0f MB", b/1e6; else printf "%d KB", k }'; }
+gb_kb()    { print $(( $1 * 976562 )); }
 livre_kb() { df -k "$HOME" | awk 'NR==2{print $4}'; }
 total_kb() { df -k "$HOME" | awk 'NR==2{print $2}'; }
 curto()    { print -r -- "${1/#$HOME/~}"; }
@@ -159,7 +161,7 @@ dica() {
 # ─── comandos ──────────────────────────────────────────────────────────────
 
 cmd_status() {
-  local livre=$(livre_kb) total=$(total_kb) meta=$(( META_GB * 1048576 ))
+  local livre=$(livre_kb) total=$(total_kb) meta=$(( $(gb_kb $META_GB) ))
   print -r -- "${B}disco-livre${N} ${D}$VERSAO${N}"
   print -r -- ""
   printf "  Espaço livre: %s%s%s de %s\n" "$B" "$(humano $livre)" "$N" "$(humano $total)"
@@ -192,19 +194,16 @@ cmd_limpar() {
   done
 
   local -a fila
-  local total=0 tipo desc cam cond t
-  while IFS='|' read -r tipo desc cam cond; do
-    [[ -d $cam ]] || continue
-    t=$(medir $tipo "$cam")
-    (( t < 1024 )) && continue
-    if app_aberto "$cond"; then
+  local total=0 tipo desc cam bloq t
+  while IFS='|' read -r t desc bloq tipo cam; do
+    if (( bloq )); then
       (( silencioso )) || printf "  %s%-9s%s %s %s(feche o app pra limpar)%s\n" "$D" "$(humano $t)" "$N" "$desc" "$Y" "$N"
       continue
     fi
     fila+=("$tipo|$cam|$desc|$t")
     (( total += t ))
     (( silencioso )) || printf "  %s%-9s%s %s\n" "$B" "$(humano $t)" "$N" "$desc"
-  done < <(alvos_seguros)
+  done < <(listar_lixo)
 
   LIBERADO_KB=0
   if (( ${#fila} == 0 )); then
@@ -232,7 +231,67 @@ cmd_limpar() {
   (( silencioso )) || print -r -- "  ${G}✓ Limpo.${N} Livre agora: $(humano $(livre_kb)) (antes $(humano $antes))"
 }
 
-maiores() {
+# ─── coleta (saída em linhas campo|campo, usada pelo terminal e pelo app) ──
+
+# kb|descrição|bloqueado(0/1)|tipo|caminho
+listar_lixo() {
+  local tipo desc cam cond t b
+  while IFS='|' read -r tipo desc cam cond; do
+    [[ -d $cam ]] || continue
+    t=$(medir $tipo "$cam")
+    (( t < 1024 )) && continue
+    app_aberto "$cond" && b=1 || b=0
+    print -r -- "$t|$desc|$b|$tipo|$cam"
+  done < <(alvos_seguros)
+}
+
+# n|kb|app|pasta — só apps acima do limite de crash
+listar_crashes() {
+  local c n
+  for c in ${(f)"$(crashpads)"}; do
+    n=$(find "$c" -type f 2>/dev/null | wc -l | tr -d ' ')
+    (( n > LIMITE_CRASH )) && print -r -- "$n|$(kb "$c")|${c:h:t}|$c"
+  done
+}
+
+# tipo(reabre|erro)|label|app ou código|programa
+listar_tarefas() {
+  local lista desativadas f label linha pid st prog ka
+  lista=$(launchctl list 2>/dev/null)
+  desativadas=$(launchctl print-disabled "gui/$UID" 2>/dev/null)
+  for f in "$HOME/Library/LaunchAgents"/*.plist(N); do
+    label=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$f" 2>/dev/null) || continue
+    print -r -- "$desativadas" | grep -qF "\"$label\" => disabled" && continue
+    print -r -- "$desativadas" | grep -qF "\"$label\" => true" && continue
+    linha=$(print -r -- "$lista" | awk -v l="$label" '$3==l')
+    [[ -z $linha ]] && continue
+    pid=${${=linha}[1]} st=${${=linha}[2]}
+    prog=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$f" 2>/dev/null ||
+           /usr/libexec/PlistBuddy -c 'Print :Program' "$f" 2>/dev/null)
+    ka=$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$f" 2>/dev/null)
+    if [[ $prog == *.app/Contents/MacOS/* && -n $ka && $ka != false ]]; then
+      print -r -- "reabre|$label|${${prog%%.app/*}:t}|$prog"
+    elif [[ $pid == - && $st != 0 ]]; then
+      print -r -- "erro|$label|$st|$prog"
+    fi
+  done
+}
+
+# app|porta|perfil
+listar_remoto() {
+  local l exe porta perfil
+  ps -axo command= | grep -E -- '--remote-debugging-port=[0-9]+' | grep -v -- '--type=' | grep -v grep |
+  while read -r l; do
+    exe=${${l%%.app/*}:t}
+    porta=${l##*--remote-debugging-port=}; porta=${porta%% *}
+    perfil=""
+    [[ $l == *--user-data-dir=* ]] && perfil=${${l##*--user-data-dir=}%% --*}
+    print -r -- "$exe|$porta|$perfil"
+  done
+}
+
+# kb|caminho — as N maiores pastas
+listar_maiores() {
   local -a cands
   cands=(
     "$HOME/Library/Application Support"/*(N/)
@@ -246,86 +305,77 @@ maiores() {
     "$HOME/Pictures"/*(N/) "$HOME/Music"/*(N/)
     "$HOME/Downloads" "$HOME/Desktop"
   )
-  local p t d
+  local p t
   for p in $cands; do
     [[ ${p:t} == .Trash ]] && continue
     t=$(kb "$p")
     (( t >= 524288 )) && print -r -- "$t|$p"
-  done | sort -t'|' -k1,1nr | head -n ${1:-15} | while IFS='|' read -r t p; do
-    local marca=""
-    [[ ${p#$HOME} == */.* ]] && marca=" ${Y}(oculta no Finder)${N}"
+  done | sort -t'|' -k1,1nr | head -n ${1:-15}
+}
+
+oculta() { [[ ${1#$HOME} == */.* ]]; }
+
+# ─── relatórios no terminal ───────────────────────────────────────────────
+
+maiores() {
+  local t p d marca
+  listar_maiores ${1:-15} | while IFS='|' read -r t p; do
+    marca=""
+    oculta "$p" && marca=" ${Y}(oculta no Finder)${N}"
     printf "  %s%-9s%s %s%s\n" "$B" "$(humano $t)" "$N" "$(curto "$p")" "$marca"
     d=$(dica "$p")
     [[ -n $d ]] && print -r -- "            ${D}↳ $d${N}"
   done
 }
 
-# Tarefas em segundo plano (LaunchAgents) com erro ou que reabrem apps sozinhas
 tarefas() {
-  local lista desativadas f label linha pid st prog ka achou=0
-  lista=$(launchctl list 2>/dev/null)
-  desativadas=$(launchctl print-disabled "gui/$UID" 2>/dev/null)
-  for f in "$HOME/Library/LaunchAgents"/*.plist(N); do
-    label=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$f" 2>/dev/null) || continue
-    print -r -- "$desativadas" | grep -qF "\"$label\" => disabled" && continue
-    print -r -- "$desativadas" | grep -qF "\"$label\" => true" && continue
-    linha=$(print -r -- "$lista" | awk -v l="$label" '$3==l')
-    [[ -z $linha ]] && continue
-    pid=${${=linha}[1]} st=${${=linha}[2]}
-    prog=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$f" 2>/dev/null ||
-           /usr/libexec/PlistBuddy -c 'Print :Program' "$f" 2>/dev/null)
-    ka=$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$f" 2>/dev/null)
-
-    if [[ $prog == *.app/Contents/MacOS/* && -n $ka && $ka != false ]]; then
-      achou=1
-      print -r -- "  ${Y}⚠${N} ${B}$label${N} abre ${B}${${prog%%.app/*}:t}${N} sozinho e ${Y}reabre se você fechar${N}"
+  local achou=0 tipo label info prog
+  while IFS='|' read -r tipo label info prog; do
+    achou=1
+    if [[ $tipo == reabre ]]; then
+      print -r -- "  ${Y}⚠${N} ${B}$label${N} abre ${B}$info${N} sozinho e ${Y}reabre se você fechar${N}"
       print -r -- "            ${D}↳ Se não reconhece: disco-livre pausar-tarefa $label${N}"
-    elif [[ $pid == - && $st != 0 ]]; then
-      achou=1
-      print -r -- "  ${R}✗${N} ${B}$label${N} está terminando com erro (código $st)"
+    else
+      print -r -- "  ${R}✗${N} ${B}$label${N} está terminando com erro (código $info)"
       print -r -- "            ${D}↳ $(curto "$prog")${N}"
       print -r -- "            ${D}↳ Se não usa mais: disco-livre pausar-tarefa $label${N}"
     fi
-  done
+  done < <(listar_tarefas)
   (( achou )) || print -r -- "  ${G}Nenhuma tarefa com problema.${N}"
 }
 
 controle_remoto() {
-  local achou=0 l exe porta perfil
-  ps -axo command= | grep -E -- '--remote-debugging-port=[0-9]+' | grep -v -- '--type=' | grep -v grep |
-  while read -r l; do
+  local achou=0 exe porta perfil
+  while IFS='|' read -r exe porta perfil; do
     achou=1
-    exe=${${l%%.app/*}:t}
-    porta=${l##*--remote-debugging-port=}; porta=${porta%% *}
-    perfil=""
-    [[ $l == *--user-data-dir=* ]] && perfil=${${l##*--user-data-dir=}%% --*}
     print -r -- "  ${Y}⚠${N} ${B}$exe${N} está com controle remoto ligado (porta $porta)"
     [[ -n $perfil ]] && print -r -- "            ${D}↳ perfil: $(curto "$perfil")${N}"
     print -r -- "            ${D}↳ Qualquer programa do Mac pode comandar esse navegador. Se não é uma automação sua, feche.${N}"
-  done
-  # (o while roda no shell atual no zsh, então $achou vale aqui)
+  done < <(listar_remoto)
   (( achou )) || print -r -- "  ${G}Nenhum navegador sendo controlado.${N}"
 }
 
 surtos_crash() {
-  local c n achou=0
-  for c in ${(f)"$(crashpads)"}; do
-    n=$(find "$c" -type f 2>/dev/null | wc -l | tr -d ' ')
-    if (( n > LIMITE_CRASH )); then
-      achou=1
-      print -r -- "  ${R}✗${N} ${B}${c:h:t}${N} gerou ${B}$n${N} relatórios de crash ($(humano $(kb "$c")))"
-      print -r -- "            ${D}↳ O app está travando em loop. Limpe e reinicie/atualize o app.${N}"
-    fi
-  done
+  local achou=0 n t app c
+  while IFS='|' read -r n t app c; do
+    achou=1
+    print -r -- "  ${R}✗${N} ${B}$app${N} gerou ${B}$n${N} relatórios de crash ($(humano $t))"
+    print -r -- "            ${D}↳ O app está travando em loop. Limpe e reinicie/atualize o app.${N}"
+  done < <(listar_crashes)
   (( achou )) || print -r -- "  ${G}Nenhum app crashando em massa.${N}"
 }
 
-tendencia() {
+# variação do espaço livre em 7 dias (KB); vazio se não há histórico
+tendencia_kb() {
   [[ -f $HIST ]] || return 0
-  local agora=$(date +%s) ref livre=$(livre_kb)
-  ref=$(awk -F, -v t=$(( agora - 7*86400 )) '$1>=t {print $2; exit}' "$HIST")
-  [[ -z $ref ]] && return 0
-  local dif=$(( livre - ref ))
+  local ref
+  ref=$(awk -F, -v t=$(( $(date +%s) - 7*86400 )) '$1>=t {print $2; exit}' "$HIST")
+  [[ -n $ref ]] && print $(( $(livre_kb) - ref ))
+}
+
+tendencia() {
+  local dif=$(tendencia_kb)
+  [[ -z $dif ]] && return 0
   if (( dif < -1048576 )); then
     print -r -- "  ${Y}Últimos 7 dias: você perdeu $(humano $dif) de espaço livre${N}"
   elif (( dif > 1048576 )); then
@@ -375,7 +425,7 @@ registrar() {
 
 cmd_vigiar() {
   registrar
-  local livre=$(livre_kb) meta=$(( META_GB * 1048576 )) c n tam s
+  local livre=$(livre_kb) meta=$(( $(gb_kb $META_GB) )) c n tam s
 
   # 1) surto de crash — o problema que enche o disco em poucos dias
   for c in ${(f)"$(crashpads)"}; do
@@ -397,7 +447,7 @@ cmd_vigiar() {
   local maximo queda
   maximo=$(awk -F, -v t=$(( $(date +%s) - 86400 )) '$1>=t && $2>m {m=$2} END{print m+0}' "$HIST")
   queda=$(( maximo - livre ))
-  if (( queda > ALERTA_QUEDA_GB * 1048576 )) && pode_avisar queda 43200; then
+  if (( queda > $(gb_kb $ALERTA_QUEDA_GB) )) && pode_avisar queda 43200; then
     log "queda rápida: -$(humano $queda) em 24h"
     avisar "Seu disco está enchendo rápido" "Você perdeu $(humano $queda) nas últimas 24h. Rode: disco-livre analisar"
   fi
@@ -560,6 +610,55 @@ cmd_mover() {
   print -r -- "  ${G}✓${N} Pronto. Livre agora: $(humano $(livre_kb))"
 }
 
+# ─── dados pro app (JSON) ─────────────────────────────────────────────────
+
+js()   { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/ }; print -rn -- "\"$s\""; }
+bool() { (( $1 )) && print -rn true || print -rn false; }
+
+cmd_dados() {
+  local sep t desc b tipo cam n app c label info prog porta perfil p
+  case ${1:-resumo} in
+    resumo)
+      local tend=$(tendencia_kb) at=0 al=0
+      ativo && at=1
+      [[ $AUTO_LIMPEZA == sim ]] && al=1
+      print -rn -- "{\"livre\":$(livre_kb),\"total\":$(total_kb),\"meta_kb\":$(gb_kb $META_GB),\"meta_gb\":$META_GB"
+      print -rn -- ",\"vigilancia\":$(bool $at),\"auto_limpeza\":$(bool $al),\"intervalo\":$INTERVALO_HORAS"
+      print -rn -- ",\"tendencia_kb\":${tend:-null}"
+
+      print -rn -- ",\"lixo\":["; sep=
+      while IFS='|' read -r t desc b tipo cam; do
+        print -rn -- "$sep{\"kb\":$t,\"desc\":$(js "$desc"),\"bloqueado\":$(bool $b),\"cam\":$(js "$cam")}"; sep=,
+      done < <(listar_lixo)
+
+      print -rn -- "],\"crashes\":["; sep=
+      while IFS='|' read -r n t app c; do
+        print -rn -- "$sep{\"n\":$n,\"kb\":$t,\"app\":$(js "$app"),\"cam\":$(js "$c")}"; sep=,
+      done < <(listar_crashes)
+
+      print -rn -- "],\"tarefas\":["; sep=
+      while IFS='|' read -r tipo label info prog; do
+        print -rn -- "$sep{\"tipo\":$(js "$tipo"),\"label\":$(js "$label"),\"info\":$(js "$info"),\"prog\":$(js "$prog")}"; sep=,
+      done < <(listar_tarefas)
+
+      print -rn -- "],\"remoto\":["; sep=
+      while IFS='|' read -r app porta perfil; do
+        print -rn -- "$sep{\"app\":$(js "$app"),\"porta\":$(js "$porta"),\"perfil\":$(js "$perfil")}"; sep=,
+      done < <(listar_remoto)
+      print -r -- "]}"
+      ;;
+    pastas)
+      print -rn -- "["; sep=
+      while IFS='|' read -r t p; do
+        oculta "$p" && b=1 || b=0
+        print -rn -- "$sep{\"kb\":$t,\"cam\":$(js "$p"),\"oculta\":$(bool $b),\"dica\":$(js "$(dica "$p")")}"; sep=,
+      done < <(listar_maiores 20)
+      print -r -- "]"
+      ;;
+    *) erro "use: disco-livre dados resumo|pastas" ;;
+  esac
+}
+
 cmd_ajuda() {
   cat <<EOF
 ${B}disco-livre${N} — mantém seu Mac com espaço livre
@@ -595,6 +694,7 @@ case ${1:-status} in
   analisar|a)      cmd_analisar ;;
   limpar)          shift; cmd_limpar "$@" ;;
   vigiar)          cmd_vigiar ;;
+  dados)           cmd_dados "$2" ;;
   config)          shift; cmd_config "$@" ;;
   ativar)          cmd_ativar ;;
   desativar)       cmd_desativar ;;

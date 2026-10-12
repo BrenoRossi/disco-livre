@@ -38,7 +38,22 @@ Requisitos: macOS 12 ou mais novo (Intel ou Apple Silicon). Não precisa instala
 
 ---
 
-## Usar
+## O app: uma gaveta na borda da tela
+
+Encoste o mouse na **borda direita da tela** e a gaveta desliza pra dentro. Tire o mouse e ela some. Também dá pra abrir pelo ícone de disco na barra de menus, que mostra quantos GB você tem livres (e fica vermelho abaixo da meta).
+
+Na gaveta você tem:
+- o espaço livre com a **linha da sua meta** na barra
+- **alertas**: app crashando em loop, tarefa que reabre app sozinha (com botão **Pausar**), navegador com controle remoto
+- o **lixo seguro**, com o botão **Limpar**
+- as **maiores pastas**, inclusive as ocultas, com um botão pra abrir no Finder
+- os **ajustes**: meta, vigilância, limpeza automática e abrir ao ligar o Mac
+
+O `install.sh` compila o app e coloca em Aplicativos. Pra isso, o Mac precisa das ferramentas da Apple (`xcode-select --install`). Sem elas, a ferramenta de terminal funciona normalmente.
+
+---
+
+## Usar no Terminal
 
 ```bash
 disco-livre                     # resumo: espaço livre, meta, vigilância

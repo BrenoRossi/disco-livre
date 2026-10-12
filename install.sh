@@ -31,6 +31,24 @@ if [[ ":$PATH:" != *":$BIN:"* ]]; then
   print -r -- "${Y}!${N} Abra um terminal novo (ou rode: source ~/.zshrc) pra usar o comando disco-livre"
 fi
 
+# App visual (gaveta lateral) — precisa das Ferramentas de Linha de Comando da Apple
+if command -v swiftc >/dev/null 2>&1; then
+  print -r -- "Compilando o app Disco Livre…"
+  if app/build.sh >/dev/null 2>&1; then
+    DEST=/Applications
+    [[ -w $DEST ]] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
+    pkill -x DiscoLivre 2>/dev/null || true
+    rm -rf "$DEST/Disco Livre.app"
+    cp -R "app/build/Disco Livre.app" "$DEST/"
+    print -r -- "${G}✓${N} App instalado em ${DEST/#$HOME/~}/Disco Livre.app"
+    APP_OK=1
+  else
+    print -r -- "${Y}!${N} Não consegui compilar o app (a ferramenta de terminal funciona normal)"
+  fi
+else
+  print -r -- "${Y}!${N} Pra ter o app visual, instale as ferramentas da Apple: xcode-select --install (e rode ./install.sh de novo)"
+fi
+
 # Configuração inicial (só pergunta se for terminal interativo)
 if [[ -t 0 ]]; then
   print -r -- ""
@@ -47,3 +65,7 @@ fi
 
 print -r -- ""
 print -r -- "${G}Pronto!${N} Experimente: ${B}disco-livre analisar${N}"
+if [[ -n $APP_OK ]]; then
+  open "$DEST/Disco Livre.app"
+  print -r -- "O app já está aberto: encoste o mouse na ${B}borda direita da tela${N} ou clique no ícone de disco na barra de menus."
+fi
