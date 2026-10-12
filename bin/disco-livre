@@ -1,0 +1,607 @@
+#!/bin/zsh
+# disco-livre — vigia o espaço do seu Mac e limpa só o que é lixo seguro.
+# Licença MIT.
+
+emulate -R zsh
+setopt NULL_GLOB
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+VERSAO="1.0.0"
+SCRIPT="${0:A}"
+DIR_CONF="${DISCO_LIVRE_DIR:-$HOME/.config/disco-livre}"
+CONF="$DIR_CONF/config"
+HIST="$DIR_CONF/historico.csv"
+ESTADO="$DIR_CONF/estado"
+LOG="$HOME/Library/Logs/disco-livre.log"
+LABEL="com.disco-livre.vigia"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+# Padrões — mude com `disco-livre config`
+META_GB=30            # espaço livre mínimo que você quer manter
+AUTO_LIMPEZA=nao      # limpar o lixo seguro sozinho quando ficar abaixo da meta
+LIMPAR_CRASH=sim      # apagar sozinho surtos de relatórios de crash
+INTERVALO_HORAS=3     # de quanto em quanto tempo a vigilância roda
+LOG_DIAS=7            # logs mais velhos que isso são lixo
+ALERTA_QUEDA_GB=10    # avisa se o espaço livre cair isso em 24h
+LIMITE_CRASH=500      # quantos relatórios de crash contam como surto
+[[ -f $CONF ]] && source "$CONF"
+
+if [[ -t 1 ]]; then
+  B=$'\e[1m' D=$'\e[2m' R=$'\e[31m' G=$'\e[32m' Y=$'\e[33m' C=$'\e[36m' N=$'\e[0m'
+else
+  B= D= R= G= Y= C= N=
+fi
+
+# ─── utilitários ────────────────────────────────────────────────────────────
+
+kb()       { du -sk "$1" 2>/dev/null | awk '{print $1+0}'; }
+kb_antigos() {
+  find "$1" -type f -mtime +$LOG_DIAS -print0 2>/dev/null | xargs -0 stat -f%z 2>/dev/null |
+    awk '{s+=$1} END{printf "%d\n", s/1024}'
+}
+humano()   { awk -v k="${1:-0}" 'BEGIN{ if(k<0)k=-k; if(k>=1048576) printf "%.1f GB", k/1048576; else if(k>=1024) printf "%.0f MB", k/1024; else printf "%d KB", k }'; }
+livre_kb() { df -k "$HOME" | awk 'NR==2{print $4}'; }
+total_kb() { df -k "$HOME" | awk 'NR==2{print $2}'; }
+curto()    { print -r -- "${1/#$HOME/~}"; }
+titulo()   { print -r -- ""; print -r -- "${B}$1${N}"; }
+erro()     { print -r -- "${R}✗${N} $1" >&2; exit 1; }
+log()      { mkdir -p "${LOG:h}"; print -r -- "$(date '+%F %T') $*" >> "$LOG"; }
+avisar()   { osascript -e "display notification \"${2//\"/\'}\" with title \"${1//\"/\'}\"" >/dev/null 2>&1; }
+confirmar() { local r; read -r "r?$1 [s/N] "; [[ $r == [sSyY]* ]]; }
+ativo()    { launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; }
+
+# `app_aberto "Google Chrome"` → verdadeiro se o app estiver rodando ("-" = nenhum)
+app_aberto() { [[ $1 != - ]] && pgrep -fi -- "$1" >/dev/null 2>&1; }
+
+# Só avisa de novo depois de N segundos (evita spam de notificação)
+pode_avisar() {
+  local agora=$(date +%s) ult
+  ult=$(grep "^$1=" "$ESTADO" 2>/dev/null | cut -d= -f2)
+  (( agora - ${ult:-0} < $2 )) && return 1
+  mkdir -p "$DIR_CONF"
+  { grep -v "^$1=" "$ESTADO" 2>/dev/null; print "$1=$agora"; } > "$ESTADO.tmp" && mv "$ESTADO.tmp" "$ESTADO"
+}
+
+barra() {
+  local usado=$1 total=$2 w=30 n i s=""
+  n=$(( usado * w / total ))
+  for (( i = 0; i < w; i++ )); do
+    (( i < n )) && s+="█" || s+="░"
+  done
+  print -rn -- "$s"
+}
+
+# ─── o que é lixo seguro ───────────────────────────────────────────────────
+# tipo|descrição|caminho|app que precisa estar fechado (- = nenhum)
+#   conteudo = apaga tudo dentro da pasta (a pasta fica)
+#   antigos  = apaga só arquivos com mais de $LOG_DIAS dias
+
+crashpads() {
+  print -rl -- "$HOME/Library/Application Support"/*/Crashpad(N/) \
+               "$HOME/Library/Application Support"/*/*/Crashpad(N/) \
+               "$HOME/Library/Caches"/*/Crashpad(N/)
+}
+
+alvos_seguros() {
+  local c s
+  for c in ${(f)"$(crashpads)"}; do
+    for s in pending completed new; do
+      [[ -d $c/$s ]] && print -r -- "conteudo|Relatórios de crash — ${c:h:t}|$c/$s|-"
+    done
+  done
+  print -r -- "antigos|Logs com mais de $LOG_DIAS dias|$HOME/Library/Logs|-"
+  print -r -- "conteudo|Cache do npm|$HOME/.npm/_cacache|-"
+  print -r -- "conteudo|Cache do pip|$HOME/Library/Caches/pip|-"
+  print -r -- "conteudo|Cache do uv (Python)|$HOME/.cache/uv|-"
+  print -r -- "conteudo|Cache do Yarn|$HOME/Library/Caches/Yarn|-"
+  print -r -- "conteudo|Cache do Homebrew|$HOME/Library/Caches/Homebrew|brew"
+  print -r -- "conteudo|Xcode DerivedData|$HOME/Library/Developer/Xcode/DerivedData|Xcode.app"
+  print -r -- "conteudo|Cache do Chrome|$HOME/Library/Caches/Google/Chrome|Google Chrome"
+  print -r -- "conteudo|Cache do Edge|$HOME/Library/Caches/Microsoft Edge|Microsoft Edge"
+  print -r -- "conteudo|Cache do Brave|$HOME/Library/Caches/BraveSoftware|Brave Browser"
+  print -r -- "conteudo|Cache do Opera GX|$HOME/Library/Caches/com.operasoftware.OperaGX|Opera GX"
+  print -r -- "conteudo|Cache do Camera Raw (Lightroom/Photoshop)|$HOME/Library/Caches/Adobe Camera Raw 2|Lightroom|Photoshop"
+  for c in "$HOME/Library/Caches"/*ShipIt(N/); do
+    print -r -- "conteudo|Atualização já baixada — ${c:t:r}|$c|-"
+  done
+}
+
+medir() {
+  case $1 in
+    conteudo) kb "$2" ;;
+    antigos)  kb_antigos "$2" ;;
+  esac
+}
+
+apagar_alvo() {
+  case $1 in
+    conteudo) find "$2" -mindepth 1 -delete 2>/dev/null ;;
+    antigos)  find "$2" -type f -mtime +$LOG_DIAS -delete 2>/dev/null
+              find "$2" -mindepth 1 -type d -empty -delete 2>/dev/null ;;
+  esac
+  return 0
+}
+
+# ─── dicas pras pastas grandes ─────────────────────────────────────────────
+
+dica() {
+  case $1 in
+    */Crashpad*)                 print "Relatórios de crash — lixo. disco-livre limpar" ;;
+    *"Adobe Camera Raw"*)        print "Cache do Lightroom. Lightroom → Ajustes → Desempenho: mude pro HD externo e limite o tamanho" ;;
+    */Application\ Support/Google/Chrome|*/Application\ Support/Google) print "Perfis do Chrome (favoritos, logins). Apague perfis que não usa pelo próprio Chrome" ;;
+    */Caches/Google*)            print "Cache do Chrome — disco-livre limpar (com o Chrome fechado)" ;;
+    */.lmstudio*|*/.ollama*|*huggingface*) print "Modelos de IA locais. Apague os que não usa ou mova pro HD externo pelo app" ;;
+    */.codex)                    print "Codex: histórico de conversas (sessions) e plugins. Arquive sessões antigas" ;;
+    */Application\ Support/Codex) print "App do Codex. Se for grande, veja a pasta Crashpad dentro dela" ;;
+    */Documents/Codex)           print "Pastas de trabalho que o Codex cria por data pra tarefas sem projeto" ;;
+    */Claude/vm_bundles|*/Application\ Support/Claude) print "Claude Desktop (inclui a máquina virtual do Cowork)" ;;
+    */.claude)                   print "Claude Code: histórico de sessões e projetos" ;;
+    */Movies/.gallery)           print "Stills da galeria do DaVinci Resolve. disco-livre mover pro HD externo" ;;
+    */CacheClip*)                print "Cache de render do DaVinci. No Resolve: Playback → Delete Render Cache" ;;
+    */Blackmagic\ Design)        print "DaVinci Resolve (bancos de projetos, LUTs)" ;;
+    */MobileSync*)               print "Backups de iPhone/iPad. Finder → seu iPhone → Gerenciar backups" ;;
+    */Developer/CoreSimulator)   print "Simuladores iOS. xcrun simctl delete unavailable" ;;
+    */Developer/Xcode)           print "Xcode (DerivedData, arquivos de iOS). disco-livre limpar limpa o DerivedData" ;;
+    *[Dd]ocker*)                 print "Docker. docker system prune pra limpar imagens velhas" ;;
+    */Steam)                     print "Jogos da Steam. Desinstale ou mova a biblioteca pelo app" ;;
+    */Downloads)                 print "Downloads. Apague instaladores (.dmg, .zip, .pkg) antigos" ;;
+    */Desktop)                   print "Mesa (Desktop). Capturas de tela costumam acumular aqui" ;;
+    */.npm|*/.cache|*/pnpm|*/Caches/pip) print "Cache de programação — disco-livre limpar" ;;
+    */Library/Logs)              print "Logs — disco-livre limpar apaga os antigos" ;;
+    */Library/Containers)        print "Dados de apps da App Store. Veja qual app pesa em Ajustes → Armazenamento" ;;
+    *WhatsApp*|*Telegram*)       print "Mídia de conversas. Limpe pelo próprio app (Armazenamento)" ;;
+    */Caches/*)                  print "Cache de app — costuma ser seguro apagar com o app fechado" ;;
+    */Pictures/*.photoslibrary)  print "Fotos. Ative 'Otimizar armazenamento' no app Fotos" ;;
+    */Music/*)                   print "Música/podcasts baixados" ;;
+  esac
+}
+
+# ─── comandos ──────────────────────────────────────────────────────────────
+
+cmd_status() {
+  local livre=$(livre_kb) total=$(total_kb) meta=$(( META_GB * 1048576 ))
+  print -r -- "${B}disco-livre${N} ${D}$VERSAO${N}"
+  print -r -- ""
+  printf "  Espaço livre: %s%s%s de %s\n" "$B" "$(humano $livre)" "$N" "$(humano $total)"
+  printf "  %s\n" "$(barra $(( total - livre )) $total)"
+  if (( livre >= meta )); then
+    printf "  Meta: %s GB livres  %s✓ dentro da meta%s (%s de folga)\n" "$META_GB" "$G" "$N" "$(humano $(( livre - meta )))"
+  else
+    printf "  Meta: %s GB livres  %s✗ faltam %s%s → disco-livre analisar\n" "$META_GB" "$R" "$(humano $(( meta - livre )))" "$N"
+  fi
+  print -r -- ""
+  if ativo; then
+    print -r -- "  Vigilância automática: ${G}ligada${N} (a cada ${INTERVALO_HORAS}h)"
+  else
+    print -r -- "  Vigilância automática: ${Y}desligada${N} → disco-livre ativar"
+  fi
+  print -r -- "  Limpeza automática abaixo da meta: $AUTO_LIMPEZA  ${D}(disco-livre config auto-limpeza sim|nao)${N}"
+  print -r -- ""
+  print -r -- "  ${D}disco-livre ajuda — lista todos os comandos${N}"
+}
+
+cmd_limpar() {
+  local executar=0 sim=0 silencioso=0 a
+  for a; do
+    case $a in
+      --executar)   executar=1 ;;
+      --sim|-y)     sim=1 ;;
+      --silencioso) silencioso=1 ;;
+      *) erro "opção desconhecida: $a" ;;
+    esac
+  done
+
+  local -a fila
+  local total=0 tipo desc cam cond t
+  while IFS='|' read -r tipo desc cam cond; do
+    [[ -d $cam ]] || continue
+    t=$(medir $tipo "$cam")
+    (( t < 1024 )) && continue
+    if app_aberto "$cond"; then
+      (( silencioso )) || printf "  %s%-9s%s %s %s(feche o app pra limpar)%s\n" "$D" "$(humano $t)" "$N" "$desc" "$Y" "$N"
+      continue
+    fi
+    fila+=("$tipo|$cam|$desc|$t")
+    (( total += t ))
+    (( silencioso )) || printf "  %s%-9s%s %s\n" "$B" "$(humano $t)" "$N" "$desc"
+  done < <(alvos_seguros)
+
+  LIBERADO_KB=0
+  if (( ${#fila} == 0 )); then
+    (( silencioso )) || print -r -- "  ${G}Nada pra limpar agora.${N}"
+    return 0
+  fi
+  (( silencioso )) || print -r -- "  ${B}Total: $(humano $total)${N}"
+
+  if (( ! executar )); then
+    print -r -- "  ${D}Simulação — nada foi apagado. Pra apagar: ${N}${C}disco-livre limpar --executar${N}"
+    return 0
+  fi
+  if (( ! sim )) && ! confirmar "Apagar $(humano $total) de lixo seguro?"; then
+    print -r -- "Cancelado."
+    return 0
+  fi
+
+  local antes=$(livre_kb) item
+  for item in $fila; do
+    IFS='|' read -r tipo cam desc t <<< "$item"
+    apagar_alvo $tipo "$cam"
+    log "limpou: $desc ($(humano $t))"
+  done
+  LIBERADO_KB=$total
+  (( silencioso )) || print -r -- "  ${G}✓ Limpo.${N} Livre agora: $(humano $(livre_kb)) (antes $(humano $antes))"
+}
+
+maiores() {
+  local -a cands
+  cands=(
+    "$HOME/Library/Application Support"/*(N/)
+    "$HOME/Library/Caches"/*(N/)
+    "$HOME/Library/Group Containers"/*(N/)
+    "$HOME/Library/Developer"/*(N/)
+    "$HOME/Library/Containers" "$HOME/Library/Logs"
+    "$HOME"/.*(N/)
+    "$HOME/Movies"/*(N/) "$HOME/Movies"/.*(N/)
+    "$HOME/Documents"/*(N/) "$HOME/Documents"/.*(N/)
+    "$HOME/Pictures"/*(N/) "$HOME/Music"/*(N/)
+    "$HOME/Downloads" "$HOME/Desktop"
+  )
+  local p t d
+  for p in $cands; do
+    [[ ${p:t} == .Trash ]] && continue
+    t=$(kb "$p")
+    (( t >= 524288 )) && print -r -- "$t|$p"
+  done | sort -t'|' -k1,1nr | head -n ${1:-15} | while IFS='|' read -r t p; do
+    local marca=""
+    [[ ${p#$HOME} == */.* ]] && marca=" ${Y}(oculta no Finder)${N}"
+    printf "  %s%-9s%s %s%s\n" "$B" "$(humano $t)" "$N" "$(curto "$p")" "$marca"
+    d=$(dica "$p")
+    [[ -n $d ]] && print -r -- "            ${D}↳ $d${N}"
+  done
+}
+
+# Tarefas em segundo plano (LaunchAgents) com erro ou que reabrem apps sozinhas
+tarefas() {
+  local lista desativadas f label linha pid st prog ka achou=0
+  lista=$(launchctl list 2>/dev/null)
+  desativadas=$(launchctl print-disabled "gui/$UID" 2>/dev/null)
+  for f in "$HOME/Library/LaunchAgents"/*.plist(N); do
+    label=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$f" 2>/dev/null) || continue
+    print -r -- "$desativadas" | grep -qF "\"$label\" => disabled" && continue
+    print -r -- "$desativadas" | grep -qF "\"$label\" => true" && continue
+    linha=$(print -r -- "$lista" | awk -v l="$label" '$3==l')
+    [[ -z $linha ]] && continue
+    pid=${${=linha}[1]} st=${${=linha}[2]}
+    prog=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$f" 2>/dev/null ||
+           /usr/libexec/PlistBuddy -c 'Print :Program' "$f" 2>/dev/null)
+    ka=$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$f" 2>/dev/null)
+
+    if [[ $prog == *.app/Contents/MacOS/* && -n $ka && $ka != false ]]; then
+      achou=1
+      print -r -- "  ${Y}⚠${N} ${B}$label${N} abre ${B}${${prog%%.app/*}:t}${N} sozinho e ${Y}reabre se você fechar${N}"
+      print -r -- "            ${D}↳ Se não reconhece: disco-livre pausar-tarefa $label${N}"
+    elif [[ $pid == - && $st != 0 ]]; then
+      achou=1
+      print -r -- "  ${R}✗${N} ${B}$label${N} está terminando com erro (código $st)"
+      print -r -- "            ${D}↳ $(curto "$prog")${N}"
+      print -r -- "            ${D}↳ Se não usa mais: disco-livre pausar-tarefa $label${N}"
+    fi
+  done
+  (( achou )) || print -r -- "  ${G}Nenhuma tarefa com problema.${N}"
+}
+
+controle_remoto() {
+  local achou=0 l exe porta perfil
+  ps -axo command= | grep -E -- '--remote-debugging-port=[0-9]+' | grep -v -- '--type=' | grep -v grep |
+  while read -r l; do
+    achou=1
+    exe=${${l%%.app/*}:t}
+    porta=${l##*--remote-debugging-port=}; porta=${porta%% *}
+    perfil=""
+    [[ $l == *--user-data-dir=* ]] && perfil=${${l##*--user-data-dir=}%% --*}
+    print -r -- "  ${Y}⚠${N} ${B}$exe${N} está com controle remoto ligado (porta $porta)"
+    [[ -n $perfil ]] && print -r -- "            ${D}↳ perfil: $(curto "$perfil")${N}"
+    print -r -- "            ${D}↳ Qualquer programa do Mac pode comandar esse navegador. Se não é uma automação sua, feche.${N}"
+  done
+  # (o while roda no shell atual no zsh, então $achou vale aqui)
+  (( achou )) || print -r -- "  ${G}Nenhum navegador sendo controlado.${N}"
+}
+
+surtos_crash() {
+  local c n achou=0
+  for c in ${(f)"$(crashpads)"}; do
+    n=$(find "$c" -type f 2>/dev/null | wc -l | tr -d ' ')
+    if (( n > LIMITE_CRASH )); then
+      achou=1
+      print -r -- "  ${R}✗${N} ${B}${c:h:t}${N} gerou ${B}$n${N} relatórios de crash ($(humano $(kb "$c")))"
+      print -r -- "            ${D}↳ O app está travando em loop. Limpe e reinicie/atualize o app.${N}"
+    fi
+  done
+  (( achou )) || print -r -- "  ${G}Nenhum app crashando em massa.${N}"
+}
+
+tendencia() {
+  [[ -f $HIST ]] || return 0
+  local agora=$(date +%s) ref livre=$(livre_kb)
+  ref=$(awk -F, -v t=$(( agora - 7*86400 )) '$1>=t {print $2; exit}' "$HIST")
+  [[ -z $ref ]] && return 0
+  local dif=$(( livre - ref ))
+  if (( dif < -1048576 )); then
+    print -r -- "  ${Y}Últimos 7 dias: você perdeu $(humano $dif) de espaço livre${N}"
+  elif (( dif > 1048576 )); then
+    print -r -- "  ${G}Últimos 7 dias: você ganhou $(humano $dif) de espaço livre${N}"
+  fi
+}
+
+cmd_analisar() {
+  registrar
+  cmd_status
+  tendencia
+
+  titulo "1. Lixo seguro (é recriado sozinho)"
+  cmd_limpar
+
+  titulo "2. Apps crashando em massa"
+  surtos_crash
+
+  titulo "3. Maiores pastas pra revisar ${D}(medindo… pode levar um minuto)${N}"
+  maiores 15
+
+  titulo "4. Tarefas em segundo plano"
+  tarefas
+
+  titulo "5. Navegadores com controle remoto"
+  controle_remoto
+
+  local lixeira snaps
+  lixeira=$(kb "$HOME/.Trash")
+  snaps=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c 'com.apple')
+  if (( lixeira > 102400 || snaps > 0 )); then
+    titulo "6. Outros"
+    (( lixeira > 102400 )) && print -r -- "  Lixeira com ${B}$(humano $lixeira)${N} — esvazie pelo Finder"
+    (( snaps > 0 )) && print -r -- "  $snaps snapshot(s) local(is) do Time Machine ${D}(o macOS apaga sozinho quando precisar de espaço)${N}"
+  fi
+  print -r -- ""
+}
+
+registrar() {
+  mkdir -p "$DIR_CONF"
+  print -r -- "$(date +%s),$(livre_kb)" >> "$HIST"
+  # guarda só os últimos ~60 dias (a cada 3h ≈ 500 linhas)
+  if (( $(wc -l < "$HIST") > 1000 )); then
+    tail -n 500 "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
+  fi
+}
+
+cmd_vigiar() {
+  registrar
+  local livre=$(livre_kb) meta=$(( META_GB * 1048576 )) c n tam s
+
+  # 1) surto de crash — o problema que enche o disco em poucos dias
+  for c in ${(f)"$(crashpads)"}; do
+    n=$(find "$c" -type f 2>/dev/null | wc -l | tr -d ' ')
+    (( n > LIMITE_CRASH )) || continue
+    tam=$(kb "$c")
+    if [[ $LIMPAR_CRASH == sim ]]; then
+      for s in pending completed new; do [[ -d $c/$s ]] && find "$c/$s" -mindepth 1 -delete 2>/dev/null; done
+      log "surto de crash: ${c:h:t} — apagou $n relatórios ($(humano $tam))"
+      avisar "${c:h:t} está crashando sem parar" "Apaguei $n relatórios de crash ($(humano $tam)). Vale reiniciar ou atualizar o app."
+    else
+      log "surto de crash: ${c:h:t} — $n relatórios ($(humano $tam))"
+      avisar "${c:h:t} está crashando sem parar" "$n relatórios de crash ($(humano $tam)). Rode: disco-livre limpar"
+    fi
+  done
+  livre=$(livre_kb)
+
+  # 2) queda rápida — algo novo está enchendo o disco
+  local maximo queda
+  maximo=$(awk -F, -v t=$(( $(date +%s) - 86400 )) '$1>=t && $2>m {m=$2} END{print m+0}' "$HIST")
+  queda=$(( maximo - livre ))
+  if (( queda > ALERTA_QUEDA_GB * 1048576 )) && pode_avisar queda 43200; then
+    log "queda rápida: -$(humano $queda) em 24h"
+    avisar "Seu disco está enchendo rápido" "Você perdeu $(humano $queda) nas últimas 24h. Rode: disco-livre analisar"
+  fi
+
+  # 3) meta de espaço livre
+  if (( livre < meta )); then
+    if [[ $AUTO_LIMPEZA == sim ]]; then
+      cmd_limpar --executar --sim --silencioso
+      livre=$(livre_kb)
+      (( LIBERADO_KB > 0 )) && avisar "Limpeza automática" "Liberei $(humano $LIBERADO_KB). Agora: $(humano $livre) livres."
+    fi
+    if (( livre < meta )) && pode_avisar meta 21600; then
+      log "abaixo da meta: $(humano $livre) livres (meta $META_GB GB)"
+      avisar "Pouco espaço: $(humano $livre) livres" "Sua meta é $META_GB GB. Rode: disco-livre analisar"
+    fi
+  fi
+}
+
+salvar_config() {
+  mkdir -p "$DIR_CONF"
+  cat > "$CONF" <<EOF
+# disco-livre — configuração (edite à vontade ou use: disco-livre config)
+META_GB=$META_GB
+AUTO_LIMPEZA=$AUTO_LIMPEZA
+LIMPAR_CRASH=$LIMPAR_CRASH
+INTERVALO_HORAS=$INTERVALO_HORAS
+LOG_DIAS=$LOG_DIAS
+ALERTA_QUEDA_GB=$ALERTA_QUEDA_GB
+LIMITE_CRASH=$LIMITE_CRASH
+EOF
+}
+
+cmd_config() {
+  if (( $# == 0 )); then
+    print -r -- "${B}Configuração${N} ${D}($(curto "$CONF"))${N}"
+    print -r -- "  meta           $META_GB GB      espaço livre mínimo"
+    print -r -- "  auto-limpeza   $AUTO_LIMPEZA        limpar lixo seguro sozinho abaixo da meta"
+    print -r -- "  limpar-crash   $LIMPAR_CRASH        apagar sozinho surtos de crash"
+    print -r -- "  intervalo      ${INTERVALO_HORAS}h        de quanto em quanto tempo vigiar"
+    print -r -- "  logs-dias      $LOG_DIAS          idade pra log virar lixo"
+    print -r -- "  alerta-queda   $ALERTA_QUEDA_GB GB      avisar se perder isso em 24h"
+    print -r -- ""
+    print -r -- "  ${D}Ex.: disco-livre config meta 30${N}"
+    return 0
+  fi
+  local chave=$1 valor=$2
+  case $chave in
+    meta)         [[ $valor == <1-> ]] || erro "use: disco-livre config meta 30"; META_GB=$valor ;;
+    auto-limpeza) [[ $valor == (sim|nao) ]] || erro "use: sim ou nao"; AUTO_LIMPEZA=$valor ;;
+    limpar-crash) [[ $valor == (sim|nao) ]] || erro "use: sim ou nao"; LIMPAR_CRASH=$valor ;;
+    intervalo)    [[ $valor == <1-24> ]] || erro "use um número de horas (1 a 24)"; INTERVALO_HORAS=$valor ;;
+    logs-dias)    [[ $valor == <1-> ]] || erro "use um número de dias"; LOG_DIAS=$valor ;;
+    alerta-queda) [[ $valor == <1-> ]] || erro "use um número em GB"; ALERTA_QUEDA_GB=$valor ;;
+    *) erro "opção desconhecida: $chave (veja: disco-livre config)" ;;
+  esac
+  salvar_config
+  print -r -- "${G}✓${N} $chave = $valor"
+  [[ $chave == intervalo ]] && ativo && cmd_ativar
+  return 0
+}
+
+cmd_ativar() {
+  [[ -f $CONF ]] || salvar_config
+  mkdir -p "${PLIST:h}"
+  cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array><string>$SCRIPT</string><string>vigiar</string></array>
+  <key>StartInterval</key><integer>$(( INTERVALO_HORAS * 3600 ))</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+</dict></plist>
+EOF
+  launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
+  launchctl enable "gui/$UID/$LABEL" 2>/dev/null
+  launchctl bootstrap "gui/$UID" "$PLIST" || erro "não consegui ativar a vigilância"
+  print -r -- "${G}✓${N} Vigilância ligada: confere o disco a cada ${INTERVALO_HORAS}h e te avisa abaixo de $META_GB GB livres."
+}
+
+cmd_desativar() {
+  launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
+  rm -f "$PLIST"
+  print -r -- "${G}✓${N} Vigilância desligada."
+}
+
+plist_da_tarefa() {
+  local f
+  for f in "$HOME/Library/LaunchAgents"/*.plist(N); do
+    [[ $(/usr/libexec/PlistBuddy -c 'Print :Label' "$f" 2>/dev/null) == $1 ]] && { print -r -- "$f"; return 0; }
+  done
+  return 1
+}
+
+cmd_pausar_tarefa() {
+  [[ -n $1 ]] || erro "use: disco-livre pausar-tarefa <nome-da-tarefa>"
+  plist_da_tarefa "$1" >/dev/null || erro "não achei a tarefa $1 em ~/Library/LaunchAgents"
+  launchctl bootout "gui/$UID/$1" 2>/dev/null
+  launchctl disable "gui/$UID/$1"
+  log "pausou tarefa: $1"
+  print -r -- "${G}✓${N} $1 parada e não volta ao reiniciar. Pra religar: disco-livre religar-tarefa $1"
+}
+
+cmd_religar_tarefa() {
+  [[ -n $1 ]] || erro "use: disco-livre religar-tarefa <nome-da-tarefa>"
+  local f
+  f=$(plist_da_tarefa "$1") || erro "não achei a tarefa $1 em ~/Library/LaunchAgents"
+  launchctl enable "gui/$UID/$1"
+  launchctl bootstrap "gui/$UID" "$f" 2>/dev/null
+  log "religou tarefa: $1"
+  print -r -- "${G}✓${N} $1 religada."
+}
+
+contar() { find "$1" -type f ! -name .DS_Store ! -name '._*' 2>/dev/null | wc -l | tr -d ' '; }
+bytes()  { find "$1" -type f ! -name .DS_Store ! -name '._*' -print0 2>/dev/null | xargs -0 stat -f%z 2>/dev/null | awk '{s+=$1} END{printf "%d\n", s}'; }
+
+cmd_mover() {
+  (( $# == 2 )) || erro "use: disco-livre mover <pasta> <pasta-de-destino-no-HD-externo>"
+  local entrada=${1%/}
+  [[ -L $entrada ]] && erro "$entrada já é um atalho — já foi movida"
+  [[ -d $entrada ]] || erro "pasta não encontrada: $entrada"
+  [[ -d $2 ]] || erro "destino não existe: $2 (o HD está conectado?)"
+  local orig=${entrada:A} dest=${2:A}
+  [[ $orig == $HOME/* ]] || erro "por segurança, só movo pastas dentro de $(curto $HOME)"
+  [[ $dest == $orig || $dest == $orig/* ]] && erro "o destino não pode ficar dentro da própria pasta"
+
+  local nome=${orig:t}
+  local final="$dest/${nome#.}"
+  [[ -e $final ]] && erro "já existe $final"
+
+  local tam=$(kb "$orig") livre_dest
+  livre_dest=$(df -k "$dest" | awk 'NR==2{print $4}')
+  (( livre_dest > tam + 1048576 )) || erro "sem espaço no destino ($(humano $livre_dest) livres, precisa de $(humano $tam))"
+
+  print -r -- "${B}Mover $(humano $tam)${N}"
+  print -r -- "  de:   $(curto "$orig")"
+  print -r -- "  para: $final"
+  print -r -- "  No lugar fica um atalho — os apps continuam achando os arquivos."
+  print -r -- "  ${Y}Feche os apps que usam essa pasta antes de continuar.${N}"
+  print -r -- "  ${Y}Depois, deixe o HD conectado quando for usar esses arquivos.${N}"
+  confirmar "Continuar?" || { print -r -- "Cancelado."; return 0; }
+
+  print -r -- "Copiando…"
+  mkdir -p "$final" || erro "não consegui criar $final"
+  rsync -rt "$orig/" "$final/" || erro "a cópia falhou — nada foi apagado do Mac"
+
+  local n1 n2 b1 b2
+  n1=$(contar "$orig") n2=$(contar "$final")
+  b1=$(bytes "$orig")  b2=$(bytes "$final")
+  if [[ $n1 != $n2 || $b1 != $b2 ]]; then
+    erro "a cópia não bateu ($n1 vs $n2 arquivos) — nada foi apagado do Mac. Cópia parcial em: $final"
+  fi
+  print -r -- "  ${G}✓${N} Cópia conferida: $n2 arquivos, $(humano $(( b2 / 1024 )))"
+
+  rm -rf "$orig" && ln -s "$final" "$orig" || erro "copiei, mas não consegui trocar a pasta pelo atalho"
+  log "moveu: $orig → $final ($(humano $tam))"
+  print -r -- "  ${G}✓${N} Pronto. Livre agora: $(humano $(livre_kb))"
+}
+
+cmd_ajuda() {
+  cat <<EOF
+${B}disco-livre${N} — mantém seu Mac com espaço livre
+
+${B}Uso:${N}
+  disco-livre                      resumo: espaço livre, meta e vigilância
+  disco-livre analisar             raio-x completo: o que ocupa espaço e por quê
+  disco-livre limpar               mostra o lixo seguro (simulação)
+  disco-livre limpar --executar    apaga o lixo seguro (pede confirmação)
+  disco-livre mover <pasta> <dest> move uma pasta pro HD externo e deixa um atalho
+
+  disco-livre ativar               liga a vigilância automática
+  disco-livre desativar            desliga a vigilância automática
+  disco-livre config               mostra/muda a configuração
+  disco-livre config meta 30       espaço livre mínimo (GB)
+  disco-livre config auto-limpeza sim   limpa sozinho quando passar da meta
+
+  disco-livre pausar-tarefa <nome>  para uma tarefa em segundo plano (reversível)
+  disco-livre religar-tarefa <nome> religa uma tarefa pausada
+
+${B}O que a vigilância faz${N} (a cada ${INTERVALO_HORAS}h):
+  • avisa quando o espaço livre fica abaixo da meta
+  • avisa quando o disco perde mais de ${ALERTA_QUEDA_GB} GB em 24h
+  • detecta apps crashando em loop e apaga os relatórios
+  • se auto-limpeza = sim, limpa o lixo seguro sozinho
+
+Histórico do que foi apagado: $(curto "$LOG")
+EOF
+}
+
+case ${1:-status} in
+  status)          cmd_status ;;
+  analisar|a)      cmd_analisar ;;
+  limpar)          shift; cmd_limpar "$@" ;;
+  vigiar)          cmd_vigiar ;;
+  config)          shift; cmd_config "$@" ;;
+  ativar)          cmd_ativar ;;
+  desativar)       cmd_desativar ;;
+  mover)           shift; cmd_mover "$@" ;;
+  pausar-tarefa)   cmd_pausar_tarefa "$2" ;;
+  religar-tarefa)  cmd_religar_tarefa "$2" ;;
+  versao|-v|--version) print -r -- "disco-livre $VERSAO" ;;
+  ajuda|-h|--help) cmd_ajuda ;;
+  *) print -r -- "Comando desconhecido: $1"; cmd_ajuda; exit 1 ;;
+esac
