@@ -172,25 +172,6 @@ final class Estado: ObservableObject {
 
 // MARK: - Interface
 
-struct Cartao<Conteudo: View>: View {
-    let titulo: String
-    let icone: String
-    @ViewBuilder var conteudo: Conteudo
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(titulo, systemImage: icone)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            conteudo
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
-    }
-}
-
 struct BarraEspaco: View {
     let r: Resumo
 
@@ -207,365 +188,437 @@ struct BarraEspaco: View {
             let limite = CGFloat(r.total - r.metaKb) / CGFloat(max(r.total, 1))
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.1))
-                Capsule().fill(cor.gradient).frame(width: max(10, w * usado))
+                Capsule().fill(cor.gradient).frame(width: max(8, w * usado))
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.primary.opacity(0.7))
-                    .frame(width: 2, height: 20)
+                    .fill(Color.primary.opacity(0.75))
+                    .frame(width: 2, height: 14)
                     .offset(x: w * limite - 1)
-                    .help("Sua meta: o disco não deve passar deste ponto")
             }
         }
-        .frame(height: 12)
-        .padding(.vertical, 4)
+        .frame(height: 8)
+        .padding(.vertical, 3)
+        .help("A linha é a sua meta: o disco não deve encher além dela")
+    }
+}
+
+/// Anel com o espaço livre no meio e um tique marcando a meta.
+struct AnelEspaco: View {
+    let r: Resumo
+
+    var cores: [Color] {
+        if r.livre < r.metaKb { return [.red, .pink] }
+        if r.livre < r.metaKb + r.metaKb / 3 { return [.orange, .yellow] }
+        return [Color(red: 0.16, green: 0.80, blue: 0.56), Color(red: 0.10, green: 0.55, blue: 0.95)]
+    }
+
+    var body: some View {
+        let livre = CGFloat(r.livre) / CGFloat(max(r.total, 1))
+        let meta = CGFloat(r.metaKb) / CGFloat(max(r.total, 1))
+        ZStack {
+            Circle().stroke(Color.primary.opacity(0.08), lineWidth: 7)
+            Circle()
+                .trim(from: 0, to: livre)
+                .stroke(AngularGradient(colors: cores + [cores[0]], center: .center),
+                        style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            // tique da meta
+            Capsule()
+                .fill(Color.primary.opacity(0.8))
+                .frame(width: 2.5, height: 11)
+                .offset(y: -29)
+                .rotationEffect(.degrees(Double(meta) * 360))
+            VStack(spacing: -2) {
+                Text("\(Int((Double(r.livre) * 1024 / 1e9).rounded()))")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                Text("GB").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 58, height: 58)
+        .help("Anel = espaço livre. Tique = sua meta.")
+    }
+}
+
+/// Ícone branco num quadradinho colorido, como nos Ajustes do Sistema.
+struct IconeQuadrado: View {
+    let simbolo: String
+    let cor: Color
+
+    var body: some View {
+        Image(systemName: simbolo)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(cor.gradient))
+    }
+}
+
+/// Uma linha "ícone · rótulo ........ valor" do resumo compacto.
+struct Linha<Valor: View>: View {
+    let icone: String
+    let cor: Color
+    let titulo: String
+    @ViewBuilder var valor: Valor
+
+    var body: some View {
+        HStack(spacing: 10) {
+            IconeQuadrado(simbolo: icone, cor: cor)
+            Text(titulo)
+            Spacer(minLength: 8)
+            valor
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 10)
+        .frame(height: 38)
+    }
+}
+
+/// Botão em cápsula com degradê.
+struct Capsula: ButtonStyle {
+    let cor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(cor.gradient))
+            .shadow(color: cor.opacity(0.35), radius: 3, y: 1)
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+    }
+}
+
+/// Fundo agrupado (estilo lista dos Ajustes).
+struct Grupo<Conteudo: View>: View {
+    @ViewBuilder var conteudo: Conteudo
+
+    var body: some View {
+        VStack(spacing: 0) { conteudo }
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+    }
+}
+
+struct Secao<Conteudo: View>: View {
+    let titulo: String
+    @ViewBuilder var conteudo: Conteudo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(titulo)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            conteudo
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 struct PainelView: View {
     @EnvironmentObject var e: Estado
-    @AppStorage("bordaAtiva") var bordaAtiva = true
+    @State private var detalhes = false
     @State private var confirmando = false
     @State private var iniciarComMac = SMAppService.mainApp.status == .enabled
-    var fechar: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            cabecalho
-            Divider().opacity(0.4)
+        VStack(alignment: .leading, spacing: 0) {
             if !CLI.existe {
                 semFerramenta
             } else if let r = e.resumo {
-                ScrollView {
-                    VStack(spacing: 12) {
-                        espaco(r)
-                        alertas(r)
-                        lixo(r)
-                        pastas
-                        ajustes(r)
-                        rodape
+                resumo(r).padding(14)
+                if detalhes {
+                    Divider()
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            alertas(r)
+                            lixoDetalhado(r)
+                            pastas
+                            ajustes(r)
+                        }
+                        .padding(14)
                     }
-                    .padding(14)
+                    .frame(maxHeight: 420)
                 }
+                Divider()
+                rodape(r)
             } else {
-                Spacer()
-                ProgressView("Olhando o disco…").controlSize(.small)
-                Spacer()
+                HStack { ProgressView().controlSize(.small); Text("Olhando o disco…").foregroundStyle(.secondary) }
+                    .padding(20)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    var cabecalho: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "internaldrive.fill").foregroundStyle(.green)
-            Text("Disco Livre").font(.headline)
-            Spacer()
-            if e.carregando { ProgressView().controlSize(.small) }
-            Button { Task { await e.atualizar() } } label: { Image(systemName: "arrow.clockwise") }
-                .help("Atualizar")
-            Button { fechar() } label: { Image(systemName: "xmark") }
-                .help("Fechar")
-        }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .frame(width: 300)
+        .animation(.easeInOut(duration: 0.2), value: detalhes)
     }
 
     var semFerramenta: some View {
-        VStack(spacing: 8) {
-            Spacer()
-            Image(systemName: "wrench.and.screwdriver").font(.largeTitle).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
             Text("Falta instalar a ferramenta").font(.headline)
             Text("Na pasta do disco-livre, rode ./install.sh no Terminal.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Spacer()
+                .font(.caption).foregroundStyle(.secondary)
         }
-        .padding()
+        .padding(16)
     }
 
-    func espaco(_ r: Resumo) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(tamanho(r.livre)).font(.system(size: 34, weight: .bold, design: .rounded))
-                Text("livres de \(tamanho(r.total))").foregroundStyle(.secondary)
+    // ── as 4 coisas ──────────────────────────────────────────────────────
+
+    func resumo(_ r: Resumo) -> some View {
+        let total = r.lixo.filter { !$0.bloqueado }.reduce(Int64(0)) { $0 + $1.kb }
+        let ok = r.livre >= r.metaKb
+        return VStack(alignment: .leading, spacing: 12) {
+            // 1. espaço livre
+            HStack(spacing: 14) {
+                AnelEspaco(r: r)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Espaço livre").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    Text(tamanho(r.livre)).font(.system(size: 22, weight: .bold, design: .rounded))
+                    HStack(spacing: 4) {
+                        Circle().fill(ok ? Color.green : Color.red).frame(width: 6, height: 6)
+                        Text(ok ? "\(tamanho(r.livre - r.metaKb)) acima da meta"
+                                : "faltam \(tamanho(r.metaKb - r.livre)) pra meta")
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(ok ? Color.secondary : Color.red)
+                }
+                Spacer()
+                if e.carregando { ProgressView().controlSize(.mini) }
             }
-            BarraEspaco(r: r)
-            if r.livre >= r.metaKb {
-                Label("\(tamanho(r.livre - r.metaKb)) acima da sua meta de \(r.metaGb) GB", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green).font(.callout)
-            } else {
-                Label("Faltam \(tamanho(r.metaKb - r.livre)) pra sua meta de \(r.metaGb) GB", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red).font(.callout)
+
+            Grupo {
+                // 2. meta
+                Linha(icone: "flag.fill", cor: .blue, titulo: "Meta") {
+                    HStack(spacing: 2) {
+                        Button { e.mudarMeta(max(5, r.metaGb - 5)) } label: {
+                            Image(systemName: "minus").frame(width: 20, height: 20)
+                        }
+                        Text("\(r.metaGb) GB").monospacedDigit().fontWeight(.semibold).frame(minWidth: 46)
+                        Button { e.mudarMeta(min(500, r.metaGb + 5)) } label: {
+                            Image(systemName: "plus").frame(width: 20, height: 20)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(.horizontal, 4)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+                }
+                Divider().padding(.leading, 42)
+                // 3. vigia
+                Linha(icone: r.vigilancia ? "eye.fill" : "eye.slash.fill", cor: r.vigilancia ? .purple : .gray, titulo: "Vigia") {
+                    Text(r.vigilancia ? "a cada \(r.intervalo)h" : "desligado")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Toggle("", isOn: Binding(get: { r.vigilancia }, set: { v in Task { await e.mudarVigilancia(v) } }))
+                        .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+                }
+                Divider().padding(.leading, 42)
+                // 4. pra limpar
+                Linha(icone: "sparkles", cor: .green, titulo: "Pra limpar") {
+                    if e.limpando {
+                        ProgressView().controlSize(.mini)
+                    } else if total == 0 {
+                        Text("nada 👌").foregroundStyle(.secondary)
+                    } else {
+                        Text(tamanho(total)).monospacedDigit().foregroundStyle(.secondary)
+                        Button(confirmando ? "Confirmar" : "Limpar") {
+                            if confirmando {
+                                confirmando = false
+                                Task { await e.limpar() }
+                            } else {
+                                confirmando = true
+                            }
+                        }
+                        .buttonStyle(Capsula(cor: confirmando ? .orange : .green))
+                        .help("Apaga só cache, logs velhos e relatórios de crash. Tudo se recria sozinho.")
+                    }
+                }
             }
-            if let t = r.tendenciaKb, abs(t) > 1_000_000 {
-                Text(t < 0 ? "↓ perdeu \(tamanho(t)) nos últimos 7 dias" : "↑ ganhou \(tamanho(t)) nos últimos 7 dias")
-                    .font(.caption).foregroundStyle(t < 0 ? .orange : .secondary)
+
+            if confirmando {
+                HStack {
+                    Text("Apagar \(tamanho(total)) de lixo seguro?").font(.caption)
+                    Spacer()
+                    Button("Cancelar") { confirmando = false }.buttonStyle(.borderless).font(.caption)
+                }
+            }
+            if let a = e.aviso {
+                Label(a, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
             }
         }
-        .padding(.horizontal, 2)
     }
+
+    func rodape(_ r: Resumo) -> some View {
+        let alertas = r.crashes.count + r.tarefas.count + r.remoto.count
+        return HStack {
+            Button {
+                detalhes.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Text(detalhes ? "Ver menos" : "Ver mais")
+                    Image(systemName: detalhes ? "chevron.up" : "chevron.down").font(.caption2)
+                    if alertas > 0 && !detalhes {
+                        Text("\(alertas) alerta\(alertas > 1 ? "s" : "")")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.orange.opacity(0.2)))
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+            Spacer()
+            Button { Task { await e.atualizar() } } label: { Image(systemName: "arrow.clockwise") }
+                .help("Atualizar")
+        }
+        .buttonStyle(.borderless)
+        .font(.callout)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    // ── detalhes (Ver mais) ──────────────────────────────────────────────
 
     @ViewBuilder
     func alertas(_ r: Resumo) -> some View {
         if !r.crashes.isEmpty || !r.tarefas.isEmpty || !r.remoto.isEmpty {
-            Cartao(titulo: "Atenção", icone: "exclamationmark.triangle") {
+            Secao(titulo: "Alertas") {
                 ForEach(r.crashes) { c in
-                    linhaAlerta(icone: "xmark.octagon.fill", cor: .red,
-                                titulo: "\(c.app) está crashando sem parar",
-                                texto: "\(c.n) relatórios de crash (\(tamanho(c.kb))). Limpe abaixo e reinicie o app.")
+                    alerta("xmark.octagon.fill", .red, "\(c.app) está crashando sem parar",
+                           "\(c.n) relatórios de crash (\(tamanho(c.kb))). Limpe e reinicie o app.")
                 }
                 ForEach(r.tarefas) { t in
                     HStack(alignment: .top) {
-                        linhaAlerta(icone: t.tipo == "reabre" ? "arrow.triangle.2.circlepath" : "exclamationmark.circle.fill",
-                                    cor: t.tipo == "reabre" ? .orange : .red,
-                                    titulo: t.label,
-                                    texto: t.tipo == "reabre"
-                                        ? "Abre o \(t.info) sozinho e reabre se você fechar."
-                                        : "Tarefa em segundo plano terminando com erro (código \(t.info)).")
+                        alerta(t.tipo == "reabre" ? "arrow.triangle.2.circlepath" : "exclamationmark.circle.fill",
+                               t.tipo == "reabre" ? .orange : .red, t.label,
+                               t.tipo == "reabre" ? "Abre o \(t.info) sozinho e reabre se você fechar."
+                                                  : "Tarefa em segundo plano dando erro (código \(t.info)).")
                         Button("Pausar") { Task { await e.pausar(t.label) } }
-                            .controlSize(.small)
-                            .help("Para a tarefa e impede que volte ao reiniciar. Dá pra desfazer no Terminal: disco-livre religar-tarefa \(t.label)")
+                            .controlSize(.mini)
+                            .help("Para a tarefa (reversível: disco-livre religar-tarefa \(t.label))")
                     }
                 }
                 ForEach(r.remoto) { rm in
-                    linhaAlerta(icone: "dot.radiowaves.left.and.right", cor: .orange,
-                                titulo: "\(rm.app) com controle remoto ligado",
-                                texto: "Qualquer programa do Mac pode comandar esse navegador. Se não é uma automação sua, feche.")
+                    alerta("dot.radiowaves.left.and.right", .orange, "\(rm.app) com controle remoto ligado",
+                           "Qualquer programa pode comandar esse navegador. Se não é automação sua, feche.")
                 }
             }
         }
     }
 
-    func linhaAlerta(icone: String, cor: Color, titulo: String, texto: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icone).foregroundStyle(cor).frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(titulo).font(.callout.weight(.medium)).lineLimit(2)
-                Text(texto).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    func alerta(_ icone: String, _ cor: Color, _ titulo: String, _ texto: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: icone).foregroundStyle(cor).font(.caption).frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(titulo).font(.caption.weight(.medium)).lineLimit(2)
+                Text(texto).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
     }
 
-    func lixo(_ r: Resumo) -> some View {
-        let itens = r.lixo.sorted { $0.kb > $1.kb }
-        let total = itens.filter { !$0.bloqueado }.reduce(Int64(0)) { $0 + $1.kb }
-        return Cartao(titulo: "Lixo seguro", icone: "trash") {
-            if itens.isEmpty {
-                Text("Nada pra limpar agora 👌").foregroundStyle(.secondary)
+    func lixoDetalhado(_ r: Resumo) -> some View {
+        Secao(titulo: "O que dá pra limpar") {
+            if r.lixo.isEmpty {
+                Text("Nada no momento.").font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(itens) { i in
+            ForEach(r.lixo.sorted { $0.kb > $1.kb }) { i in
                 HStack {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(i.desc).lineLimit(1)
-                        if i.bloqueado {
-                            Text("feche o app pra limpar").font(.caption2).foregroundStyle(.orange)
-                        }
+                    Text(i.desc).lineLimit(1)
+                    if i.bloqueado {
+                        Text("feche o app").font(.caption2).foregroundStyle(.orange)
                     }
                     Spacer()
                     Text(tamanho(i.kb)).monospacedDigit().foregroundStyle(.secondary)
                 }
-                .font(.callout)
+                .font(.caption)
                 .opacity(i.bloqueado ? 0.55 : 1)
-            }
-            if total > 0 {
-                Text("Tudo isso se recria sozinho. Seus arquivos não são tocados.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if e.limpando {
-                    HStack { ProgressView().controlSize(.small); Text("Limpando…") }
-                } else if confirmando {
-                    HStack {
-                        Text("Apagar \(tamanho(total))?").font(.callout.weight(.medium))
-                        Spacer()
-                        Button("Cancelar") { confirmando = false }
-                        Button("Limpar") {
-                            confirmando = false
-                            Task { await e.limpar() }
-                        }
-                        .buttonStyle(.borderedProminent).tint(.green)
-                    }
-                } else {
-                    Button { confirmando = true } label: {
-                        Label("Limpar \(tamanho(total))", systemImage: "sparkles").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
-                }
-            }
-            if let a = e.aviso {
-                Label(a, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
             }
         }
     }
 
     var pastas: some View {
-        Cartao(titulo: "Maiores pastas", icone: "folder") {
+        Secao(titulo: "Maiores pastas") {
             if e.medindoPastas {
-                HStack { ProgressView().controlSize(.small); Text("Medindo… leva uns 15 segundos").foregroundStyle(.secondary) }
-                    .font(.callout)
+                HStack { ProgressView().controlSize(.mini); Text("Medindo… uns 15 s").foregroundStyle(.secondary) }
+                    .font(.caption)
             } else if let lista = e.pastas {
-                ForEach(lista.prefix(12)) { p in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(p.nome).font(.callout.weight(.medium)).lineLimit(1)
-                            if p.oculta {
-                                Text("oculta")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(Capsule().fill(Color.orange.opacity(0.2)))
-                                    .foregroundStyle(.orange)
-                                    .help("O Finder não mostra essa pasta")
-                            }
-                            Spacer()
-                            Text(tamanho(p.kb)).monospacedDigit().font(.callout).foregroundStyle(.secondary)
-                            Button { NSWorkspace.shared.open(URL(fileURLWithPath: p.cam)) } label: {
-                                Image(systemName: "arrow.up.forward.square")
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Abrir no Finder")
+                ForEach(lista.prefix(10)) { p in
+                    HStack(spacing: 4) {
+                        Text(p.nome).lineLimit(1).truncationMode(.middle)
+                        if p.oculta {
+                            Text("oculta").font(.system(size: 9, weight: .semibold)).foregroundStyle(.orange)
                         }
-                        Text(p.curto).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
-                        if !p.dica.isEmpty {
-                            Text(p.dica).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Text(tamanho(p.kb)).monospacedDigit().foregroundStyle(.secondary)
+                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: p.cam)) } label: {
+                            Image(systemName: "arrow.up.forward.square")
                         }
+                        .buttonStyle(.borderless)
+                        .help(p.dica.isEmpty ? "Abrir no Finder: \(p.curto)" : "\(p.dica)\n\(p.curto)")
                     }
-                    .padding(.vertical, 2)
+                    .font(.caption)
                 }
-                Button("Medir de novo") { Task { await e.medirPastas() } }.controlSize(.small)
             } else {
-                Text("Descubra o que está ocupando espaço, inclusive pastas que o Finder esconde.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button { Task { await e.medirPastas() } } label: {
-                    Label("Medir pastas", systemImage: "magnifyingglass").frame(maxWidth: .infinity)
-                }
+                Button("Medir pastas (inclusive as ocultas)") { Task { await e.medirPastas() } }
+                    .controlSize(.small)
             }
         }
     }
 
     func ajustes(_ r: Resumo) -> some View {
-        Cartao(titulo: "Ajustes", icone: "gearshape") {
-            Stepper(value: Binding(get: { r.metaGb }, set: { e.mudarMeta($0) }), in: 5...500, step: 5) {
-                HStack {
-                    Text("Meta de espaço livre")
-                    Spacer()
-                    Text("\(r.metaGb) GB").monospacedDigit().fontWeight(.semibold)
-                }
-            }
-            Toggle(isOn: Binding(get: { r.vigilancia }, set: { v in Task { await e.mudarVigilancia(v) } })) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Vigiar sozinho")
-                    Text("A cada \(r.intervalo)h. Avisa abaixo da meta e se um app crashar em loop.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Toggle(isOn: Binding(get: { r.autoLimpeza }, set: { v in Task { await e.mudarAutoLimpeza(v) } })) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Limpar sozinho abaixo da meta")
-                    Text("Apaga só o lixo seguro e te avisa quanto liberou.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .disabled(!r.vigilancia)
-            Toggle("Abrir ao encostar o mouse na borda direita", isOn: $bordaAtiva)
+        Secao(titulo: "Ajustes") {
+            Toggle("Limpar sozinho abaixo da meta",
+                   isOn: Binding(get: { r.autoLimpeza }, set: { v in Task { await e.mudarAutoLimpeza(v) } }))
+                .disabled(!r.vigilancia)
             Toggle("Abrir ao ligar o Mac", isOn: Binding(get: { iniciarComMac }, set: { v in
                 do {
                     if v { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-                    iniciarComMac = v
-                } catch {
-                    e.aviso = nil
-                    iniciarComMac = SMAppService.mainApp.status == .enabled
-                }
+                } catch {}
+                iniciarComMac = SMAppService.mainApp.status == .enabled
             }))
+            HStack {
+                Button("Histórico") { NSWorkspace.shared.open(URL(fileURLWithPath: CLI.log)) }
+                Spacer()
+                Button("Sair") { NSApp.terminate(nil) }
+            }
+            .buttonStyle(.borderless)
+            .padding(.top, 2)
         }
         .toggleStyle(.switch)
-        .controlSize(.small)
-        .font(.callout)
-    }
-
-    var rodape: some View {
-        HStack {
-            Button("Histórico de limpezas") { NSWorkspace.shared.open(URL(fileURLWithPath: CLI.log)) }
-            Spacer()
-            Button("Sair do Disco Livre") { NSApp.terminate(nil) }
-        }
-        .buttonStyle(.borderless)
+        .controlSize(.mini)
         .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 4)
     }
 }
 
-// MARK: - Gaveta (painel flutuante)
-
-final class Gaveta: NSPanel {
-    init(conteudo: some View) {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 380, height: 700),
-                   styleMask: [.borderless, .nonactivatingPanel],
-                   backing: .buffered, defer: false)
-        isFloatingPanel = true
-        level = .floating
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        backgroundColor = .clear
-        isOpaque = false
-        hasShadow = true
-        isMovable = false
-        hidesOnDeactivate = false
-        acceptsMouseMovedEvents = true
-
-        let fundo = NSVisualEffectView()
-        fundo.material = .popover
-        fundo.blendingMode = .behindWindow
-        fundo.state = .active
-        fundo.maskImage = Gaveta.mascara(raio: 16)
-
-        let host = NSHostingView(rootView: conteudo)
-        host.frame = fundo.bounds
-        host.autoresizingMask = [.width, .height]
-        fundo.addSubview(host)
-        contentView = fundo
-    }
-
-    override var canBecomeKey: Bool { true }
-
-    static func mascara(raio: CGFloat) -> NSImage {
-        let d = raio * 2 + 1
-        let img = NSImage(size: NSSize(width: d, height: d), flipped: false) { r in
-            NSColor.black.setFill()
-            NSBezierPath(roundedRect: r, xRadius: raio, yRadius: raio).fill()
-            return true
-        }
-        img.capInsets = NSEdgeInsets(top: raio, left: raio, bottom: raio, right: raio)
-        img.resizingMode = .stretch
-        return img
-    }
-}
-
-// MARK: - App
+// MARK: - App (ícone na barra de menus + popover)
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let estado = Estado()
-    var painel: Gaveta!
+    let popover = NSPopover()
     var item: NSStatusItem!
     var monitores: [Any] = []
-    var timerBorda: Timer?
-    var timerSaida: Timer?
-    var visivel = false
-    var fixo = false   // aberta pelo ícone: só fecha com clique fora
-
-    let largura: CGFloat = 380
-    let margem: CGFloat = 8
+    var timerAbrir: Timer?
+    var timerFechar: Timer?
+    var fixo = false   // aberto com clique: só fecha com clique fora
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "internaldrive", accessibilityDescription: "Disco Livre")
-        item.button?.imagePosition = .imageLeading
-        item.button?.target = self
-        item.button?.action = #selector(cliqueNoIcone)
+        if let b = item.button {
+            b.image = NSImage(systemSymbolName: "internaldrive", accessibilityDescription: "Disco Livre")
+            b.imagePosition = .imageLeading
+            b.target = self
+            b.action = #selector(cliqueNoIcone)
+        }
 
-        painel = Gaveta(conteudo: PainelView(fechar: { [weak self] in self?.esconder() }).environmentObject(estado))
+        let host = NSHostingController(rootView: PainelView().environmentObject(estado))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.behavior = .applicationDefined
+        popover.animates = true
+
         estado.aoAtualizar = { [weak self] in self?.atualizarIcone() }
 
+        // passar o mouse no ícone abre; sair de perto fecha
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved], handler: { [weak self] _ in
             Task { @MainActor in self?.mouseMexeu() }
         }) { monitores.append(m) }
@@ -574,11 +627,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return ev
         }) { monitores.append(m) }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
-            Task { @MainActor in self?.cliqueFora() }
+            Task { @MainActor in self?.fechar() }
         }) { monitores.append(m) }
 
         Task { await estado.atualizar() }
-        if CommandLine.arguments.contains("--mostrar") { mostrar(fixo: true) }
+        if CommandLine.arguments.contains("--mostrar") { abrir(fixo: true) }
         Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.estado.atualizar() }
         }
@@ -595,97 +648,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.contentTintColor = abaixo ? .systemRed : nil
     }
 
-    @objc func cliqueNoIcone() {
-        if visivel { esconder() } else { mostrar(fixo: true) }
+    var areaDoIcone: NSRect {
+        guard let b = item.button, let w = b.window else { return .zero }
+        return w.convertToScreen(b.convert(b.bounds, to: nil))
     }
 
-    func telaDoMouse() -> NSScreen {
-        let p = NSEvent.mouseLocation
-        return NSScreen.screens.first { NSMouseInRect(p, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
+    var areaDoPopover: NSRect {
+        popover.contentViewController?.view.window?.frame ?? .zero
     }
 
     func mouseMexeu() {
         let p = NSEvent.mouseLocation
-        if !visivel {
-            guard UserDefaults.standard.object(forKey: "bordaAtiva") as? Bool ?? true else { return }
-            let f = telaDoMouse().frame
-            let naBorda = p.x >= f.maxX - 2 && p.y > f.minY + 60 && p.y < f.maxY - 60
-            if naBorda {
-                if timerBorda == nil {
-                    // espera um instante pra não abrir quando o mouse só passa pela borda
-                    timerBorda = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+        let noIcone = areaDoIcone.insetBy(dx: -2, dy: -2).contains(p)
+        if !popover.isShown {
+            if noIcone {
+                if timerAbrir == nil {
+                    timerAbrir = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
                         Task { @MainActor in
                             guard let self else { return }
-                            self.timerBorda = nil
-                            let q = NSEvent.mouseLocation
-                            if q.x >= self.telaDoMouse().frame.maxX - 3 { self.mostrar(fixo: false) }
+                            self.timerAbrir = nil
+                            if self.areaDoIcone.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) {
+                                self.abrir(fixo: false)
+                            }
                         }
                     }
                 }
             } else {
-                timerBorda?.invalidate(); timerBorda = nil
+                timerAbrir?.invalidate(); timerAbrir = nil
             }
-        } else if !fixo {
-            if painel.frame.insetBy(dx: -24, dy: -24).contains(p) {
-                timerSaida?.invalidate(); timerSaida = nil
-            } else if timerSaida == nil {
-                timerSaida = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        self.timerSaida = nil
-                        if !self.painel.frame.insetBy(dx: -24, dy: -24).contains(NSEvent.mouseLocation) { self.esconder() }
+            return
+        }
+        guard !fixo else { return }
+        let perto = noIcone || areaDoPopover.insetBy(dx: -16, dy: -16).contains(p)
+        if perto {
+            timerFechar?.invalidate(); timerFechar = nil
+        } else if timerFechar == nil {
+            timerFechar = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.timerFechar = nil
+                    let q = NSEvent.mouseLocation
+                    if !self.areaDoIcone.contains(q) && !self.areaDoPopover.insetBy(dx: -16, dy: -16).contains(q) {
+                        self.fechar(forcar: true)
                     }
                 }
             }
         }
     }
 
-    func cliqueFora() {
-        guard visivel, !painel.frame.contains(NSEvent.mouseLocation) else { return }
-        esconder()
+    @objc func cliqueNoIcone() {
+        if popover.isShown && fixo {
+            fechar(forcar: true)
+        } else if popover.isShown {
+            fixo = true   // estava aberto pelo mouse: o clique "prende"
+        } else {
+            abrir(fixo: true)
+        }
     }
 
-    func mostrar(fixo: Bool) {
+    func abrir(fixo: Bool) {
+        guard let b = item.button else { return }
         self.fixo = fixo
-        let tela = fixo ? (item.button?.window?.screen ?? telaDoMouse()) : telaDoMouse()
-        let v = tela.visibleFrame
-        let altura = min(v.height - margem * 2, 860)
-        let fim = NSRect(x: tela.frame.maxX - largura - margem, y: v.maxY - margem - altura,
-                         width: largura, height: altura)
-        if !visivel {
-            var inicio = fim
-            inicio.origin.x = tela.frame.maxX + 4
-            painel.setFrame(inicio, display: false)
-            painel.alphaValue = 0
-        }
-        visivel = true
-        painel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { c in
-            c.duration = 0.22
-            c.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            painel.animator().setFrame(fim, display: true)
-            painel.animator().alphaValue = 1
-        }
+        popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
         Task { await estado.atualizar(seVelho: true) }
     }
 
-    func esconder() {
-        guard visivel else { return }
-        visivel = false
+    func fechar(forcar: Bool = false) {
+        guard popover.isShown else { return }
+        if !forcar && areaDoPopover.contains(NSEvent.mouseLocation) { return }
+        timerFechar?.invalidate(); timerFechar = nil
         fixo = false
-        timerSaida?.invalidate(); timerSaida = nil
-        var fim = painel.frame
-        fim.origin.x = (painel.screen?.frame.maxX ?? fim.maxX) + 4
-        NSAnimationContext.runAnimationGroup({ c in
-            c.duration = 0.18
-            c.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            painel.animator().setFrame(fim, display: true)
-            painel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            Task { @MainActor in
-                if self?.visivel == false { self?.painel.orderOut(nil) }
-            }
-        })
+        popover.performClose(nil)
     }
 }
 

@@ -23,6 +23,16 @@ Em uma tarde voltaram **mais de 35 GB** sem apagar nada importante. Esta ferrame
 
 ## Instalar
 
+### Jeito fácil: pela sua IA
+
+Abra o Claude Code, o Codex ou o Cursor e cole:
+
+> Instale o disco-livre pra mim: https://github.com/SEU-USUARIO/disco-livre — siga o AGENTS.md do repositório.
+
+A IA baixa o projeto, pergunta a sua meta de espaço, instala tudo e confere se funcionou. Você só aprova o que ela pedir.
+
+### Jeito manual: pelo Terminal
+
 ```bash
 git clone https://github.com/SEU-USUARIO/disco-livre.git
 cd disco-livre
@@ -34,22 +44,28 @@ O instalador pergunta:
 2. Se quer ligar a vigilância automática
 3. Se quer que ele limpe o lixo seguro sozinho quando passar da meta
 
-Requisitos: macOS 12 ou mais novo (Intel ou Apple Silicon). Não precisa instalar mais nada.
+Pra instalar sem perguntas: `./install.sh --sim --meta 30 --vigia sim --auto-limpeza nao`
+
+Requisitos: macOS 13 ou mais novo (Intel ou Apple Silicon). O app da barra de menus precisa das ferramentas da Apple (`xcode-select --install`). Sem elas, a ferramenta de terminal funciona normalmente.
 
 ---
 
-## O app: uma gaveta na borda da tela
+## O app da barra de menus
 
-Encoste o mouse na **borda direita da tela** e a gaveta desliza pra dentro. Tire o mouse e ela some. Também dá pra abrir pelo ícone de disco na barra de menus, que mostra quantos GB você tem livres (e fica vermelho abaixo da meta).
+Um ícone pequeno de disco mostra quantos GB você tem livres. **Passou o mouse, abre o resumo. Tirou, fecha.** Se clicar, ele fica aberto até você clicar fora.
 
-Na gaveta você tem:
-- o espaço livre com a **linha da sua meta** na barra
-- **alertas**: app crashando em loop, tarefa que reabre app sozinha (com botão **Pausar**), navegador com controle remoto
-- o **lixo seguro**, com o botão **Limpar**
-- as **maiores pastas**, inclusive as ocultas, com um botão pra abrir no Finder
-- os **ajustes**: meta, vigilância, limpeza automática e abrir ao ligar o Mac
+O resumo mostra só quatro coisas:
 
-O `install.sh` compila o app e coloca em Aplicativos. Pra isso, o Mac precisa das ferramentas da Apple (`xcode-select --install`). Sem elas, a ferramenta de terminal funciona normalmente.
+| | |
+|---|---|
+| 🟢 **Espaço livre** | anel colorido (verde, laranja ou vermelho) com um tique marcando a sua meta |
+| 🚩 **Meta** | − / + pra ajustar quantos GB livres você quer manter |
+| 👁 **Vigia** | liga e desliga a vigilância automática |
+| ✨ **Pra limpar** | quanto lixo seguro existe, com o botão **Limpar** |
+
+O **Ver mais** abre os detalhes: alertas (app crashando, tarefa que reabre app sozinha, com botão **Pausar**), o que exatamente dá pra limpar, as maiores pastas (inclusive as ocultas) e os ajustes.
+
+Quando o espaço livre fica abaixo da meta, o ícone fica vermelho.
 
 ---
 
