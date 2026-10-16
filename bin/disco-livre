@@ -6,7 +6,7 @@ emulate -R zsh
 setopt NULL_GLOB
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-VERSAO="1.3.0"
+VERSAO="1.3.1"
 SCRIPT="${0:A}"
 DIR_CONF="${DISCO_LIVRE_DIR:-$HOME/.config/disco-livre}"
 CONF="$DIR_CONF/config"
@@ -35,6 +35,20 @@ fi
 # ─── utilitários ────────────────────────────────────────────────────────────
 
 kb()       { du -sk "$1" 2>/dev/null | awk '{print $1+0}'; }
+
+# Roda um comando, mas desiste depois de N segundos. Protege a análise de travar
+# enquanto uma janela de permissão do macOS (ex.: "acessar a pasta Downloads") espera resposta.
+limitado() {
+  local seg=$1; shift
+  "$@" &
+  local job=$!
+  ( sleep $seg; kill $job 2>/dev/null ) &
+  local guarda=$!
+  wait $job 2>/dev/null
+  local rc=$?
+  kill $guarda 2>/dev/null
+  return $rc
+}
 kb_antigos() {
   find "$1" -type f -mtime +$LOG_DIAS -print0 2>/dev/null | xargs -0 stat -f%z 2>/dev/null |
     awk '{s+=$1} END{printf "%d\n", s/1024}'
@@ -167,7 +181,7 @@ arquivos_antigos() {   # $1 = lixeira-antigos:DIAS:PROF:PADRÕES  $2 = pasta  �
   local x
   for x in $pads; do expr+=(-o -iname "$x"); done
   expr=("${(@)expr[2,-1]}")
-  find "$2" -maxdepth $p[3] -type f \( "${(@)expr}" \) -mtime +$p[2] -print0 2>/dev/null
+  limitado 20 find "$2" -maxdepth $p[3] -type f \( "${(@)expr}" \) -mtime +$p[2] -print0 2>/dev/null
 }
 
 soma_kb() { xargs -0 stat -f%z 2>/dev/null | awk '{s+=$1} END{printf "%d\n", s/1024}'; }
@@ -432,7 +446,7 @@ listar_maiores() {
   local p t
   for p in $cands; do
     [[ ${p:t} == .Trash ]] && continue
-    t=$(kb "$p")
+    t=$(limitado 30 kb "$p")
     (( t >= 524288 )) && print -r -- "$t|$p"
   done | sort -t'|' -k1,1nr | head -n ${1:-15}
 }
