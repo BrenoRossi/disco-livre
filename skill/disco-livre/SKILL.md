@@ -15,7 +15,23 @@ command -v disco-livre || ls ~/.local/bin/disco-livre
 
 Se não existir, peça pra pessoa instalar (README do projeto: `git clone … && ./install.sh`). Não reescreva a ferramenta na hora.
 
-## 2. Faça o raio-x
+## 2. Comece pela análise geral
+
+É o jeito mais rápido de liberar espaço com segurança:
+
+```bash
+disco-livre dados geral        # JSON: itens com id, nivel (seguro/revisar), kb, quem (app em uso), desc, nota
+```
+
+Mostre o total encontrado e uma tabela (Seguro / Revise). Peça pra fechar os apps dos itens com `quem`. Pergunte o que limpar e só então:
+
+```bash
+disco-livre limpar-itens <id> <id> --json
+```
+
+Comemore com o `liberado_kb` real. Se `lixeira_kb > 0`, explique que foi pra Lixeira e pergunte se pode esvaziar (`disco-livre esvaziar-lixeira --sim`).
+
+## 2b. Raio-x completo (pra ir além)
 
 ```bash
 disco-livre analisar

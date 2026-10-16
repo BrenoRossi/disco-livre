@@ -43,6 +43,7 @@ struct Resumo: Decodable {
     var autoLimpeza: Bool
     var intervalo: Int
     var tendenciaKb: Int64?
+    var primeiraFeita: Bool?   // opcional: ferramentas antigas não mandam
     var lixo: [Lixo]
     var crashes: [Crash]
     var tarefas: [Tarefa]
@@ -67,6 +68,29 @@ struct Tarefa: Decodable, Identifiable {
 struct Remoto: Decodable, Identifiable {
     var app: String; var porta: String; var perfil: String
     var id: String { app + porta }
+}
+
+struct ItemGeral: Decodable, Identifiable {
+    var id: String; var nivel: String; var kb: Int64; var quem: String
+    var desc: String; var nota: String; var lixeira: Bool
+    var seguro: Bool { nivel == "seguro" }
+    var bloqueado: Bool { !quem.isEmpty }
+}
+
+struct Geral: Decodable {
+    var livre: Int64
+    var itens: [ItemGeral]
+}
+
+struct Pulado: Decodable, Hashable { var desc: String; var quem: String }
+
+struct ResultadoLimpeza: Decodable {
+    var liberadoKb: Int64
+    var lixeiraKb: Int64
+    var itens: Int
+    var livreAntes: Int64
+    var livreDepois: Int64
+    var pulados: [Pulado]
 }
 
 struct Pasta: Decodable, Identifiable {
@@ -98,6 +122,15 @@ final class Estado: ObservableObject {
     @Published var medindoPastas = false
     @Published var limpando = false
     @Published var aviso: String?
+
+    // análise geral (primeira vez e sob demanda)
+    enum FaseGeral { case fechada, analisando, lista, limpando, resultado }
+    @Published var fase: FaseGeral = .fechada
+    @Published var geral: Geral?
+    @Published var marcados: Set<String> = []
+    @Published var resultado: ResultadoLimpeza?
+    @Published var esvaziandoLixeira = false
+    @Published var lixeiraVazia = false
 
     var aoAtualizar: (() -> Void)?
     private var ultimaAtualizacao = Date.distantPast
@@ -160,6 +193,69 @@ final class Estado: ObservableObject {
     func mudarAutoLimpeza(_ ligar: Bool) async {
         resumo?.autoLimpeza = ligar
         _ = await CLI.rodar(["config", "auto-limpeza", ligar ? "sim" : "nao"])
+    }
+
+    private func decodificador() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return d
+    }
+
+    func analisarGeral() async {
+        fase = .analisando
+        resultado = nil
+        lixeiraVazia = false
+        let txt = await CLI.rodar(["dados", "geral"])
+        guard let g = try? decodificador().decode(Geral.self, from: Data(txt.utf8)) else {
+            fase = .fechada
+            aviso = "Não consegui fazer a análise agora."
+            return
+        }
+        geral = g
+        // já vem marcado só o que é seguro e pode ser limpo agora
+        marcados = Set(g.itens.filter { $0.seguro && !$0.bloqueado }.map(\.id))
+        fase = .lista
+    }
+
+    func alternar(_ item: ItemGeral) {
+        guard !item.bloqueado else { return }
+        if marcados.contains(item.id) { marcados.remove(item.id) } else { marcados.insert(item.id) }
+    }
+
+    var totalMarcado: Int64 {
+        (geral?.itens ?? []).filter { marcados.contains($0.id) }.reduce(0) { $0 + $1.kb }
+    }
+
+    func limparMarcados() async {
+        guard !marcados.isEmpty else { return }
+        fase = .limpando
+        let txt = await CLI.rodar(["limpar-itens"] + Array(marcados) + ["--json"])
+        resultado = try? decodificador().decode(ResultadoLimpeza.self, from: Data(txt.utf8))
+        fase = .resultado
+        ultimaAtualizacao = .distantPast
+        await atualizar()
+    }
+
+    func pularGeral() async {
+        _ = await CLI.rodar(["geral", "--pular"])
+        fase = .fechada
+        ultimaAtualizacao = .distantPast
+        await atualizar()
+    }
+
+    func concluirGeral() {
+        fase = .fechada
+        geral = nil
+        resultado = nil
+    }
+
+    func esvaziarLixeira() async {
+        esvaziandoLixeira = true
+        _ = await CLI.rodar(["esvaziar-lixeira", "--sim"])
+        esvaziandoLixeira = false
+        lixeiraVazia = true
+        ultimaAtualizacao = .distantPast
+        await atualizar()
     }
 
     func pausar(_ label: String) async {
@@ -326,6 +422,8 @@ struct PainelView: View {
         VStack(alignment: .leading, spacing: 0) {
             if !CLI.existe {
                 semFerramenta
+            } else if e.fase != .fechada {
+                AnaliseGeralView()
             } else if let r = e.resumo {
                 resumo(r).padding(14)
                 if detalhes {
@@ -348,8 +446,9 @@ struct PainelView: View {
                     .padding(20)
             }
         }
-        .frame(width: 300)
+        .frame(width: e.fase == .fechada ? 300 : 340)
         .animation(.easeInOut(duration: 0.2), value: detalhes)
+        .animation(.easeInOut(duration: 0.25), value: e.fase)
     }
 
     var semFerramenta: some View {
@@ -573,6 +672,12 @@ struct PainelView: View {
                 } catch {}
                 iniciarComMac = SMAppService.mainApp.status == .enabled
             }))
+            Button {
+                Task { await e.analisarGeral() }
+            } label: {
+                Label("Fazer análise geral do Mac", systemImage: "wand.and.stars")
+            }
+            .controlSize(.small)
             HStack {
                 Button("Histórico") { NSWorkspace.shared.open(URL(fileURLWithPath: CLI.log)) }
                 Spacer()
@@ -584,6 +689,264 @@ struct PainelView: View {
         .toggleStyle(.switch)
         .controlSize(.mini)
         .font(.caption)
+    }
+}
+
+// MARK: - Análise geral (boas-vindas)
+
+struct AnaliseGeralView: View {
+    @EnvironmentObject var e: Estado
+    @State private var confirmandoLixeira = false
+    @State private var pulse = false
+    @State private var festa = false
+
+    var body: some View {
+        switch e.fase {
+        case .analisando: analisando
+        case .lista: lista
+        case .limpando: limpando
+        case .resultado: resultado
+        case .fechada: EmptyView()
+        }
+    }
+
+    // 1. procurando
+    var analisando: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Color.green.opacity(0.12)).frame(width: 74, height: 74)
+                    .scaleEffect(pulse ? 1.15 : 0.9)
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(LinearGradient(colors: [.green, .blue], startPoint: .top, endPoint: .bottom))
+            }
+            .onAppear { withAnimation(.easeInOut(duration: 0.9).repeatForever()) { pulse = true } }
+            VStack(spacing: 4) {
+                Text(e.resumo?.primeiraFeita == false ? "Bem-vindo ao Disco Livre 👋" : "Análise geral")
+                    .font(.headline)
+                Text("Procurando espaço escondido no seu Mac…")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("caches, relatórios de crash, logs, IA e mais")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            ProgressView().controlSize(.small)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+
+    // 2. lista pra escolher
+    var lista: some View {
+        let itens = e.geral?.itens ?? []
+        let total = itens.reduce(Int64(0)) { $0 + $1.kb }
+        let seguros = itens.filter(\.seguro)
+        let revisar = itens.filter { !$0.seguro }
+        return VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(itens.isEmpty ? "Tudo limpo por aqui" : "Encontrei")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                if !itens.isEmpty {
+                    Text(tamanho(total))
+                        .font(.system(size: 34, weight: .heavy, design: .rounded))
+                        .foregroundStyle(LinearGradient(colors: [Color(red: 0.16, green: 0.80, blue: 0.56),
+                                                                 Color(red: 0.10, green: 0.55, blue: 0.95)],
+                                                        startPoint: .leading, endPoint: .trailing))
+                    Text("que dá pra liberar no seu Mac. Escolha o que limpar:")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Text("Seu Mac não tem lixo escondido agora 👌").font(.callout)
+                }
+            }
+            .padding(14)
+
+            if !itens.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !seguros.isEmpty {
+                            grupo("Seguro", "se recria sozinho, não perde nada", seguros)
+                        }
+                        if !revisar.isEmpty {
+                            grupo("Revise", "é seu: só sai se você marcar", revisar)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                }
+                .frame(maxHeight: 360)
+            }
+
+            Divider()
+            VStack(spacing: 8) {
+                if !itens.isEmpty {
+                    Button {
+                        Task { await e.limparMarcados() }
+                    } label: {
+                        Text(e.marcados.isEmpty ? "Marque o que quer limpar" : "Liberar \(tamanho(e.totalMarcado))")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(Capsula(cor: .green))
+                    .disabled(e.marcados.isEmpty)
+                    .opacity(e.marcados.isEmpty ? 0.5 : 1)
+                }
+                HStack {
+                    if itens.contains(where: \.bloqueado) {
+                        Button("Fechei os apps, conferir de novo") { Task { await e.analisarGeral() } }
+                    }
+                    Spacer()
+                    Button(itens.isEmpty ? "Fechar" : "Agora não") { Task { await e.pularGeral() } }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(14)
+        }
+    }
+
+    func grupo(_ titulo: String, _ sub: String, _ itens: [ItemGeral]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(titulo).font(.system(size: 11, weight: .bold)).textCase(.uppercase)
+                Text(sub).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Grupo {
+                ForEach(Array(itens.enumerated()), id: \.element.id) { i, item in
+                    if i > 0 { Divider().padding(.leading, 38) }
+                    linha(item)
+                }
+            }
+        }
+    }
+
+    func linha(_ item: ItemGeral) -> some View {
+        let marcado = e.marcados.contains(item.id)
+        return Button { e.alternar(item) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: item.bloqueado ? "lock.circle" : (marcado ? "checkmark.circle.fill" : "circle"))
+                    .font(.system(size: 17))
+                    .foregroundStyle(item.bloqueado ? Color.orange : (marcado ? Color.green : Color.secondary))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.desc).font(.system(size: 12.5)).lineLimit(2).multilineTextAlignment(.leading)
+                    if item.bloqueado {
+                        Text("Feche o \(item.quem) pra limpar").font(.caption2).foregroundStyle(.orange)
+                    } else if !item.nota.isEmpty {
+                        Text(item.nota).font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
+                    }
+                }
+                Spacer(minLength: 6)
+                Text(tamanho(item.kb)).font(.system(size: 12, weight: .medium)).monospacedDigit()
+                    .foregroundStyle(marcado ? Color.primary : Color.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(item.bloqueado ? 0.65 : 1)
+        .help(item.bloqueado ? "Esse app está aberto. Feche e clique em \"conferir de novo\"." : "")
+    }
+
+    // 3. limpando
+    var limpando: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Liberando \(tamanho(e.totalMarcado))…").font(.callout)
+            Text("Não feche os apps agora").font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+    }
+
+    // 4. resultado
+    var resultado: some View {
+        let r = e.resultado
+        let liberado = r?.liberadoKb ?? 0
+        return VStack(spacing: 14) {
+            Text(liberado > 0 ? "🎉" : "✅")
+                .font(.system(size: 52))
+                .scaleEffect(festa ? 1 : 0.3)
+                .rotationEffect(.degrees(festa ? 0 : -25))
+                .onAppear { withAnimation(.spring(response: 0.45, dampingFraction: 0.55)) { festa = true } }
+            VStack(spacing: 2) {
+                Text(liberado > 0 ? "Você liberou" : "Pronto!").font(.callout).foregroundStyle(.secondary)
+                if liberado > 0 {
+                    Text(tamanho(liberado))
+                        .font(.system(size: 40, weight: .heavy, design: .rounded))
+                        .foregroundStyle(LinearGradient(colors: [Color(red: 0.16, green: 0.80, blue: 0.56),
+                                                                 Color(red: 0.10, green: 0.55, blue: 0.95)],
+                                                        startPoint: .leading, endPoint: .trailing))
+                    Text("que estavam escondidos").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if let r {
+                HStack(spacing: 8) {
+                    VStack(spacing: 1) {
+                        Text("antes").font(.caption2).foregroundStyle(.secondary)
+                        Text(tamanho(r.livreAntes)).font(.callout.weight(.semibold)).monospacedDigit()
+                    }
+                    Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                    VStack(spacing: 1) {
+                        Text("agora livres").font(.caption2).foregroundStyle(.secondary)
+                        Text(tamanho(e.resumo?.livre ?? r.livreDepois)).font(.callout.weight(.bold)).monospacedDigit()
+                            .foregroundStyle(.green)
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(Capsule().fill(Color.primary.opacity(0.05)))
+
+                if r.lixeiraKb > 0 { cartaoLixeira(r.lixeiraKb) }
+
+                if !r.pulados.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(r.pulados, id: \.self) { p in
+                            Label("Pulei \(p.desc): o \(p.quem) estava aberto", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
+            }
+            Button { e.concluirGeral() } label: { Text("Concluir").frame(maxWidth: .infinity) }
+                .buttonStyle(Capsula(cor: .blue))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(18)
+    }
+
+    func cartaoLixeira(_ kb: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                IconeQuadrado(simbolo: "trash.fill", cor: .gray)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(e.lixeiraVazia ? "Lixeira esvaziada ✓" : "Mais \(tamanho(kb)) foram pra Lixeira")
+                        .font(.callout.weight(.medium))
+                    Text(e.lixeiraVazia ? "Espaço liberado de vez." : "Ainda dá pra recuperar. Esvazie pra liberar de vez.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if !e.lixeiraVazia {
+                if e.esvaziandoLixeira {
+                    HStack { ProgressView().controlSize(.mini); Text("Esvaziando…").font(.caption) }
+                } else if confirmandoLixeira {
+                    HStack {
+                        Text("Apaga de vez tudo da Lixeira.").font(.caption)
+                        Spacer()
+                        Button("Cancelar") { confirmandoLixeira = false }.buttonStyle(.borderless).font(.caption)
+                        Button("Esvaziar") {
+                            confirmandoLixeira = false
+                            Task { await e.esvaziarLixeira() }
+                        }
+                        .buttonStyle(Capsula(cor: .red))
+                    }
+                } else {
+                    Button("Esvaziar Lixeira") { confirmandoLixeira = true }
+                        .buttonStyle(Capsula(cor: .gray))
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
     }
 }
 
@@ -630,7 +993,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.fechar() }
         }) { monitores.append(m) }
 
-        Task { await estado.atualizar() }
+        Task {
+            await estado.atualizar()
+            // primeira vez (ou instalador pediu): abre sozinho e já faz a análise geral
+            let boasVindas = CommandLine.arguments.contains("--boas-vindas")
+            if boasVindas || estado.resumo?.primeiraFeita == false {
+                abrir(fixo: true)
+                await estado.analisarGeral()
+            }
+        }
         if CommandLine.arguments.contains("--mostrar") { abrir(fixo: true) }
         Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.estado.atualizar() }

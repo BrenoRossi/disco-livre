@@ -31,22 +31,31 @@ Abra o Claude Code, o Codex ou o Cursor e cole:
 
 A IA baixa o projeto, pergunta a sua meta de espaço, instala tudo e confere se funcionou. Você só aprova o que ela pedir.
 
-### Jeito manual: pelo Terminal
+### Jeito manual: uma linha no Terminal
 
 ```bash
-git clone https://github.com/Willclaf/disco-livre.git
-cd disco-livre
-./install.sh
+zsh -c "$(curl -fsSL https://raw.githubusercontent.com/Willclaf/disco-livre/main/instalar.sh)"
 ```
 
-O instalador pergunta:
-1. Quantos GB livres você quer manter no mínimo (padrão: **30 GB**)
-2. Se quer ligar a vigilância automática
-3. Se quer que ele limpe o lixo seguro sozinho quando passar da meta
+Não precisa de git nem de nenhuma ferramenta da Apple: o app vem pronto (e é conferido por SHA-256 antes de instalar). O instalador pergunta a sua meta de espaço livre e, no fim, **o Disco Livre abre a análise geral do seu Mac**.
 
-Pra instalar sem perguntas: `./install.sh --sim --meta 30 --vigia sim --auto-limpeza nao`
+Pra instalar sem perguntas: `… instalar.sh)" -- --sim --meta 30 --vigia sim --auto-limpeza nao`
 
-Requisitos: macOS 13 ou mais novo (Intel ou Apple Silicon). O app da barra de menus precisa das ferramentas da Apple (`xcode-select --install`). Sem elas, a ferramenta de terminal funciona normalmente.
+Requisitos: macOS 13 (Ventura) ou mais novo, Intel ou Apple Silicon.
+
+---
+
+## A primeira análise: o espaço que estava escondido
+
+Logo depois de instalar, o Disco Livre vasculha o Mac e mostra **quanto dá pra liberar**:
+
+- **Seguro** (já vem marcado): caches de navegador, de apps (Claude, Codex, Cursor, Slack, Figma…), de programação (npm, pip, uv…), do Lightroom, relatórios de crash, logs velhos, atualizações já baixadas
+- **Revise** (só sai se você marcar, e vai pra Lixeira): instaladores .dmg/.pkg esquecidos em Downloads, conversas antigas do Codex, modelos de IA baixados, navegadores do Playwright
+- O que está **em uso** aparece com cadeado: "feche o Chrome pra limpar". Fechou? É só clicar em **conferir de novo**.
+
+Você escolhe, clica em **Liberar** e vê: **🎉 Você liberou X GB que estavam escondidos.** O que foi pra Lixeira aparece separado, com um botão pra esvaziar.
+
+Dá pra rodar de novo quando quiser: no app (**Ver mais → Fazer análise geral**) ou no Terminal (`disco-livre geral`).
 
 ---
 
@@ -73,9 +82,11 @@ Quando o espaço livre fica abaixo da meta, o ícone fica vermelho.
 
 ```bash
 disco-livre                     # resumo: espaço livre, meta, vigilância
+disco-livre geral               # análise geral: acha o espaço escondido, você escolhe o que limpar
 disco-livre analisar            # raio-x completo
 disco-livre limpar              # mostra o lixo seguro (só simula)
 disco-livre limpar --executar   # apaga o lixo seguro (pede confirmação)
+disco-livre esvaziar-lixeira    # esvazia a Lixeira (pede confirmação)
 disco-livre mover <pasta> <HD>  # manda uma pasta pro HD externo e deixa um atalho
 ```
 

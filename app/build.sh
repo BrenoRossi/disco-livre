@@ -2,6 +2,7 @@
 # Compila o "Disco Livre.app" (precisa só das Ferramentas de Linha de Comando: xcode-select --install)
 set -e
 cd "${0:A:h}"
+VERSAO=$(sed -n 's/^VERSAO="\(.*\)"/\1/p' ../bin/disco-livre)
 
 APP="build/Disco Livre.app"
 TMP="build/tmp"
@@ -28,7 +29,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key><string>Disco Livre</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSAO</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>

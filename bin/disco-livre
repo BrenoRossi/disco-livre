@@ -6,7 +6,7 @@ emulate -R zsh
 setopt NULL_GLOB
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-VERSAO="1.0.0"
+VERSAO="1.1.0"
 SCRIPT="${0:A}"
 DIR_CONF="${DISCO_LIVRE_DIR:-$HOME/.config/disco-livre}"
 CONF="$DIR_CONF/config"
@@ -40,7 +40,7 @@ kb_antigos() {
     awk '{s+=$1} END{printf "%d\n", s/1024}'
 }
 # GB/MB decimais, igual ao Finder e aos Ajustes do Sistema
-humano()   { awk -v k="${1:-0}" 'BEGIN{ if(k<0)k=-k; b=k*1024; if(b>=1e9) printf "%.1f GB", b/1e9; else if(b>=1e6) printf "%.0f MB", b/1e6; else printf "%d KB", k }'; }
+humano()   { awk -v k="${1:-0}" 'BEGIN{ if(k<0)k=-k; b=k*1024; if(b>=1e9) s=sprintf("%.1f GB", b/1e9); else if(b>=1e6) s=sprintf("%.0f MB", b/1e6); else s=sprintf("%d KB", k); gsub(/\./, ",", s); print s }'; }
 gb_kb()    { print $(( $1 * 976562 )); }
 livre_kb() { df -k "$HOME" | awk 'NR==2{print $4}'; }
 total_kb() { df -k "$HOME" | awk 'NR==2{print $2}'; }
@@ -49,11 +49,9 @@ titulo()   { print -r -- ""; print -r -- "${B}$1${N}"; }
 erro()     { print -r -- "${R}✗${N} $1" >&2; exit 1; }
 log()      { mkdir -p "${LOG:h}"; print -r -- "$(date '+%F %T') $*" >> "$LOG"; }
 avisar()   { osascript -e "display notification \"${2//\"/\'}\" with title \"${1//\"/\'}\"" >/dev/null 2>&1; }
-confirmar() { local r; read -r "r?$1 [s/N] "; [[ $r == [sSyY]* ]]; }
+confirmar() { local r; read -r "r?$1 [s/N] " || return 1; [[ $r == [sSyY]* ]]; }
 ativo()    { launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; }
 
-# `app_aberto "Google Chrome"` → verdadeiro se o app estiver rodando ("-" = nenhum)
-app_aberto() { [[ $1 != - ]] && pgrep -fi -- "$1" >/dev/null 2>&1; }
 
 # Só avisa de novo depois de N segundos (evita spam de notificação)
 pode_avisar() {
@@ -73,10 +71,16 @@ barra() {
   print -rn -- "$s"
 }
 
-# ─── o que é lixo seguro ───────────────────────────────────────────────────
-# tipo|descrição|caminho|app que precisa estar fechado (- = nenhum)
-#   conteudo = apaga tudo dentro da pasta (a pasta fica)
-#   antigos  = apaga só arquivos com mais de $LOG_DIAS dias
+# ─── catálogo do que dá pra limpar ─────────────────────────────────────────
+# nivel|tipo|descrição|caminho|quem precisa estar fechado|nota
+#   nivel:  seguro  = se recria sozinho (limpeza automática pode apagar)
+#           revisar = é da pessoa; só sai se ela marcar, e vai pra Lixeira
+#   tipo:   conteudo        apaga tudo dentro da pasta (a pasta fica)
+#           antigos         apaga arquivos com mais de $LOG_DIAS dias
+#           electron        apaga os caches internos de um app Electron
+#           lixeira-pasta   manda a pasta inteira pra Lixeira
+#           lixeira-antigos:DIAS:PROFUNDIDADE:PADRÕES  manda arquivos velhos pra Lixeira
+#   fechado: "-" ninguém · "?" descobre sozinho (lsof) · "Nome" processo que não pode estar aberto
 
 crashpads() {
   print -rl -- "$HOME/Library/Application Support"/*/Crashpad(N/) \
@@ -84,45 +88,152 @@ crashpads() {
                "$HOME/Library/Caches"/*/Crashpad(N/)
 }
 
-alvos_seguros() {
-  local c s
+ELECTRON_CACHES=(Cache "Code Cache" GPUCache DawnGraphiteCache DawnWebGPUCache GrShaderCache ShaderCache)
+
+electron_dirs() {
+  local s
+  for s in $ELECTRON_CACHES; do [[ -d $1/$s ]] && print -r -- "$1/$s"; done
+}
+
+alvos() {
+  local c s a L="$HOME/Library" AS="$HOME/Library/Application Support" CA="$HOME/Library/Caches"
+  # relatórios de crash de qualquer app
   for c in ${(f)"$(crashpads)"}; do
     for s in pending completed new; do
-      [[ -d $c/$s ]] && print -r -- "conteudo|Relatórios de crash — ${c:h:t}|$c/$s|-"
+      [[ -d $c/$s ]] && print -r -- "seguro|conteudo|Relatórios de crash — ${c:h:t}|$c/$s|-|"
     done
   done
-  print -r -- "antigos|Logs com mais de $LOG_DIAS dias|$HOME/Library/Logs|-"
-  print -r -- "conteudo|Cache do npm|$HOME/.npm/_cacache|-"
-  print -r -- "conteudo|Cache do pip|$HOME/Library/Caches/pip|-"
-  print -r -- "conteudo|Cache do uv (Python)|$HOME/.cache/uv|-"
-  print -r -- "conteudo|Cache do Yarn|$HOME/Library/Caches/Yarn|-"
-  print -r -- "conteudo|Cache do Homebrew|$HOME/Library/Caches/Homebrew|brew"
-  print -r -- "conteudo|Xcode DerivedData|$HOME/Library/Developer/Xcode/DerivedData|Xcode.app"
-  print -r -- "conteudo|Cache do Chrome|$HOME/Library/Caches/Google/Chrome|Google Chrome"
-  print -r -- "conteudo|Cache do Edge|$HOME/Library/Caches/Microsoft Edge|Microsoft Edge"
-  print -r -- "conteudo|Cache do Brave|$HOME/Library/Caches/BraveSoftware|Brave Browser"
-  print -r -- "conteudo|Cache do Opera GX|$HOME/Library/Caches/com.operasoftware.OperaGX|Opera GX"
-  print -r -- "conteudo|Cache do Camera Raw (Lightroom/Photoshop)|$HOME/Library/Caches/Adobe Camera Raw 2|Lightroom|Photoshop"
-  for c in "$HOME/Library/Caches"/*ShipIt(N/); do
-    print -r -- "conteudo|Atualização já baixada — ${c:t:r}|$c|-"
+  print -r -- "seguro|antigos|Logs com mais de $LOG_DIAS dias|$L/Logs|-|"
+
+  # navegadores
+  print -r -- "seguro|conteudo|Cache do Chrome|$CA/Google/Chrome|Google Chrome|"
+  print -r -- "seguro|conteudo|Cache do Edge|$CA/Microsoft Edge|Microsoft Edge|"
+  print -r -- "seguro|conteudo|Cache do Brave|$CA/BraveSoftware|Brave Browser|"
+  print -r -- "seguro|conteudo|Cache do Opera GX|$CA/com.operasoftware.OperaGX|Opera GX|"
+  print -r -- "seguro|conteudo|Cache do Arc|$CA/Arc|Arc.app|"
+  print -r -- "seguro|conteudo|Cache do Firefox|$CA/Firefox|firefox|"
+
+  # criação
+  print -r -- "seguro|conteudo|Cache do Camera Raw (Lightroom/Photoshop)|$CA/Adobe Camera Raw 2|Lightroom|"
+  print -r -- "seguro|conteudo|Cache do Spotify|$CA/com.spotify.client|Spotify|"
+
+  # IA
+  print -r -- "seguro|conteudo|Cache do Codex|$CA/Codex|?|"
+  print -r -- "seguro|conteudo|Runtimes baixados do Codex|$HOME/.cache/codex-runtimes|?|Baixados de novo quando o Codex precisar"
+  print -r -- "seguro|conteudo|Cache do Claude Code|$CA/claude-cli-nodejs|?|"
+  print -r -- "seguro|conteudo|Cache do Hugging Face (Xet)|$HOME/.cache/huggingface/xet|?|"
+
+  # programação
+  print -r -- "seguro|conteudo|Cache do npm|$HOME/.npm/_cacache|-|"
+  print -r -- "seguro|conteudo|Cache do pip|$CA/pip|-|"
+  print -r -- "seguro|conteudo|Cache do uv (Python)|$HOME/.cache/uv|?|"
+  print -r -- "seguro|conteudo|Cache do pnpm|$CA/pnpm|-|"
+  print -r -- "seguro|conteudo|Cache do Yarn|$CA/Yarn|-|"
+  print -r -- "seguro|conteudo|Cache do Homebrew|$CA/Homebrew|brew|"
+  print -r -- "seguro|conteudo|Cache do Go|$CA/go-build|-|"
+  print -r -- "seguro|conteudo|Cache do CocoaPods|$CA/CocoaPods|-|"
+  print -r -- "seguro|conteudo|Xcode DerivedData|$L/Developer/Xcode/DerivedData|Xcode.app|"
+
+  # atualizações já baixadas
+  for c in "$CA"/*ShipIt(N/); do
+    print -r -- "seguro|conteudo|Atualização já baixada — ${${c:t:r}##*.}|$c|-|"
+  done
+
+  # caches internos de apps Electron (Claude, Codex, Cursor, VS Code, Slack, Discord, Figma…)
+  for a in "$AS"/*(N/); do
+    [[ -n $(electron_dirs "$a") ]] && print -r -- "seguro|electron|Cache do app ${${a:t}##*.}|$a|?|"
+  done
+
+  # revisar: é da pessoa, vai pra Lixeira
+  print -r -- "revisar|lixeira-antigos:14:1:*.dmg *.pkg *.iso *.xip|Instaladores antigos em Downloads|$HOME/Downloads|-|Arquivos .dmg/.pkg com mais de 14 dias. Vão pra Lixeira"
+  print -r -- "revisar|lixeira-antigos:90:6:*.jsonl|Conversas do Codex com mais de 90 dias|$HOME/.codex/sessions|?|O histórico antigo some do Codex. Vai pra Lixeira"
+  print -r -- "revisar|lixeira-pasta|Modelos de IA do Hugging Face|$HOME/.cache/huggingface/hub|?|Baixados de novo se algum programa precisar. Vai pra Lixeira"
+  print -r -- "revisar|conteudo|Navegadores do Playwright|$CA/ms-playwright|?|Automações com Playwright precisarão baixar de novo"
+  print -r -- "revisar|conteudo|Suporte a iPhone do Xcode|$L/Developer/Xcode/iOS DeviceSupport|Xcode.app|O Xcode recria ao conectar o iPhone"
+}
+
+# formato antigo (tipo|descrição|caminho|fechado), só o que é seguro
+alvos_seguros() {
+  local nivel tipo desc cam cond nota
+  alvos | while IFS='|' read -r nivel tipo desc cam cond nota; do
+    [[ $nivel == seguro ]] && print -r -- "$tipo|$desc|$cam|$cond"
   done
 }
 
+arquivos_antigos() {   # $1 = lixeira-antigos:DIAS:PROF:PADRÕES  $2 = pasta  → lista separada por \0
+  local -a p pads expr
+  p=("${(@s.:.)1}")
+  pads=(${=p[4]})
+  local x
+  for x in $pads; do expr+=(-o -iname "$x"); done
+  expr=("${(@)expr[2,-1]}")
+  find "$2" -maxdepth $p[3] -type f \( "${(@)expr}" \) -mtime +$p[2] -print0 2>/dev/null
+}
+
+soma_kb() { xargs -0 stat -f%z 2>/dev/null | awk '{s+=$1} END{printf "%d\n", s/1024}'; }
+
 medir() {
+  local t=0 d
   case $1 in
-    conteudo) kb "$2" ;;
+    conteudo|lixeira-pasta) kb "$2" ;;
     antigos)  kb_antigos "$2" ;;
+    electron) for d in ${(f)"$(electron_dirs "$2")"}; do (( t += $(kb "$d") )); done; print $t ;;
+    lixeira-antigos:*) arquivos_antigos "$1" "$2" | soma_kb ;;
   esac
 }
 
+# Quem está usando? Vazio = pode limpar. Senão, o nome do app que precisa fechar.
+quem_usa() {
+  local tipo=$1 cam=$2 cond=$3 nome d
+  case $cond in
+    -|"") return 0 ;;
+    \?)
+      local -a dirs
+      if [[ $tipo == electron ]]; then dirs=(${(f)"$(electron_dirs "$cam")"}); else dirs=("$cam"); fi
+      for d in $dirs; do
+        nome=$(lsof +D "$d" -Fc 2>/dev/null | sed -n 's/^c//p' | head -1)
+        if [[ -n $nome ]]; then
+          nome=${nome//\\x20/ }
+          nome=${${${nome% Helper*}% \(*}%.app}
+          print -r -- "$nome"
+          return 0
+        fi
+      done ;;
+    *)
+      pgrep -fi -- "$cond" >/dev/null 2>&1 && print -r -- "${${cond//|/ ou }%.app}" ;;
+  esac
+}
+
+# Manda pra Lixeira (recuperável). macOS 15+: /usr/bin/trash; antes disso, pelo Finder.
+mandar_lixeira() {
+  (( $# )) || return 0
+  if [[ -x /usr/bin/trash ]]; then
+    /usr/bin/trash "$@" 2>/dev/null
+  else
+    local f
+    for f; do
+      osascript -e 'on run a' -e 'tell application "Finder" to delete (POSIX file (item 1 of a) as alias)' -e 'end run' "$f" >/dev/null 2>&1
+    done
+  fi
+  return 0
+}
+
 apagar_alvo() {
+  local d
+  # modo de teste: faz tudo, menos apagar
+  [[ -n $DISCO_LIVRE_SIMULAR ]] && { print -r -- "[simulado] $1 $2" >> "$DIR_CONF/simulado.log"; return 0; }
   case $1 in
     conteudo) find "$2" -mindepth 1 -delete 2>/dev/null ;;
     antigos)  find "$2" -type f -mtime +$LOG_DIAS -delete 2>/dev/null
               find "$2" -mindepth 1 -type d -empty -delete 2>/dev/null ;;
+    electron) for d in ${(f)"$(electron_dirs "$2")"}; do find "$d" -mindepth 1 -delete 2>/dev/null; done ;;
+    lixeira-pasta) mandar_lixeira "$2" ;;
+    lixeira-antigos:*) mandar_lixeira ${(0)"$(arquivos_antigos "$1" "$2")"} ;;
   esac
   return 0
 }
+
+vai_pra_lixeira() { [[ $1 == lixeira-* ]]; }
 
 # ─── dicas pras pastas grandes ─────────────────────────────────────────────
 
@@ -233,16 +344,29 @@ cmd_limpar() {
 
 # ─── coleta (saída em linhas campo|campo, usada pelo terminal e pelo app) ──
 
-# kb|descrição|bloqueado(0/1)|tipo|caminho
+# kb|descrição|bloqueado(0/1)|tipo|caminho|quem está usando
 listar_lixo() {
-  local tipo desc cam cond t b
+  local tipo desc cam cond t quem
   while IFS='|' read -r tipo desc cam cond; do
     [[ -d $cam ]] || continue
     t=$(medir $tipo "$cam")
     (( t < 1024 )) && continue
-    app_aberto "$cond" && b=1 || b=0
-    print -r -- "$t|$desc|$b|$tipo|$cam"
+    quem=$(quem_usa "$tipo" "$cam" "$cond")
+    print -r -- "$t|$desc|${${quem:+1}:-0}|$tipo|$cam|$quem"
   done < <(alvos_seguros)
+}
+
+id_de() { md5 -qs "$1|$2" | cut -c1-8; }
+
+# id|nivel|kb|quem está usando|descrição|nota|tipo|caminho — tudo que a análise geral encontra
+listar_geral() {
+  local nivel tipo desc cam cond nota t
+  while IFS='|' read -r nivel tipo desc cam cond nota; do
+    [[ -e $cam ]] || continue
+    t=$(medir "$tipo" "$cam")
+    (( t < 5120 )) && continue
+    print -r -- "$(id_de "$tipo" "$cam")|$nivel|$t|$(quem_usa "$tipo" "$cam" "$cond")|$desc|$nota|$tipo|$cam"
+  done < <(alvos) | sort -t'|' -k2,2r -k3,3nr
 }
 
 # n|kb|app|pasta — só apps acima do limite de crash
@@ -610,6 +734,209 @@ cmd_mover() {
   print -r -- "  ${G}✓${N} Pronto. Livre agora: $(humano $(livre_kb))"
 }
 
+# ─── análise geral (primeira vez e sob demanda) ───────────────────────────
+
+CACHE_GERAL="$DIR_CONF/geral.cache"
+
+primeira_feita()  { grep -q '^primeira=' "$ESTADO" 2>/dev/null; }
+marcar_primeira() { mkdir -p "$DIR_CONF"; primeira_feita || print -r -- "primeira=$(date +%s)" >> "$ESTADO"; }
+
+# linhas da análise: usa a medição dos últimos 15 min se existir (medir tudo leva ~30 s)
+linhas_geral() {
+  if [[ -f $CACHE_GERAL && $1 != --nova ]] && (( $(date +%s) - $(stat -f %m "$CACHE_GERAL") < 900 )); then
+    cat "$CACHE_GERAL"
+  else
+    mkdir -p "$DIR_CONF"
+    listar_geral | tee "$CACHE_GERAL"
+  fi
+}
+
+# Limpa as linhas recebidas (formato de listar_geral). Confere de novo se o app
+# não foi aberto nesse meio-tempo. Define LIBERADO_KB, LIXEIRA_KB, LIMPOS e PULADOS.
+limpar_linhas() {
+  local l id nivel t quem desc nota tipo cam cond
+  LIBERADO_KB=0 LIXEIRA_KB=0 LIMPOS=0 PULADOS=()
+  for l in "$@"; do
+    IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$l"
+    [[ -e $cam ]] || continue
+    cond=$(alvos | awk -F'|' -v c="$cam" -v t="$tipo" '$4==c && $2==t {print $5; exit}')
+    quem=$(quem_usa "$tipo" "$cam" "$cond")
+    if [[ -n $quem ]]; then PULADOS+=("$desc|$quem"); continue; fi
+    apagar_alvo "$tipo" "$cam"
+    if vai_pra_lixeira "$tipo"; then (( LIXEIRA_KB += t )); else (( LIBERADO_KB += t )); fi
+    (( LIMPOS++ ))
+    log "análise geral: $desc ($(humano $t))$(vai_pra_lixeira "$tipo" && print ' → Lixeira')"
+  done
+  rm -f "$CACHE_GERAL"
+  marcar_primeira
+}
+
+comemorar() {   # $1 = livre antes (KB)
+  local agora=$(livre_kb)
+  print -r -- ""
+  print -r -- "  ${G}════════════════════════════════════════════════════${N}"
+  if (( LIBERADO_KB > 0 )); then
+    print -r -- "   🎉  ${B}Você liberou $(humano $LIBERADO_KB) que estavam escondidos!${N}"
+  else
+    print -r -- "   ✅  ${B}Pronto!${N}"
+  fi
+  print -r -- "       Antes: $(humano $1) livres  →  Agora: ${B}$(humano $agora) livres${N}"
+  if (( LIXEIRA_KB > 0 )); then
+    print -r -- ""
+    print -r -- "   🗑️   Mais ${B}$(humano $LIXEIRA_KB)${N} foram pra Lixeira (dá pra recuperar)."
+    print -r -- "       Pra liberar de vez: ${C}disco-livre esvaziar-lixeira${N}"
+  fi
+  local p q
+  for p in $PULADOS; do
+    print -r -- "   ${Y}⚠${N}  Pulei ${p%%|*}: o ${p##*|} estava aberto."
+  done
+  print -r -- "  ${G}════════════════════════════════════════════════════${N}"
+  (( LIBERADO_KB > 0 )) && avisar "Disco Livre" "Você liberou $(humano $LIBERADO_KB). Agora: $(humano $agora) livres."
+}
+
+cmd_geral() {
+  if [[ $1 == --pular ]]; then marcar_primeira; print -r -- "${G}✓${N} Ok, não pergunto mais."; return 0; fi
+
+  print -r -- ""
+  print -r -- "${B}🔎 Análise geral do seu Mac${N}"
+  print -r -- "   Procurando espaço escondido… ${D}(uns 30 segundos)${N}"
+  local -a linhas marc
+  linhas=(${(f)"$(linhas_geral --nova)"})
+  if (( ${#linhas} == 0 )); then
+    print -r -- "   ${G}Seu Mac já está limpo 👌${N}"
+    marcar_primeira
+    return 0
+  fi
+
+  local i id nivel t quem desc nota tipo cam
+  for (( i = 1; i <= ${#linhas}; i++ )); do
+    IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$linhas[i]"
+    [[ $nivel == seguro && -z $quem ]] && marc[i]=1 || marc[i]=0
+  done
+
+  _mostrar() {
+    local grupo="" sel=0 tot=0 caixa
+    print -r -- ""
+    for (( i = 1; i <= ${#linhas}; i++ )); do
+      IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$linhas[i]"
+      if [[ $nivel != $grupo ]]; then
+        grupo=$nivel
+        [[ $nivel == seguro ]] && print -r -- "  ${B}SEGURO${N} ${D}— se recria sozinho, não perde nada${N}" \
+                               || { print -r -- ""; print -r -- "  ${B}REVISE${N} ${D}— é seu: só sai se você marcar${N}"; }
+      fi
+      (( tot += t ))
+      if (( marc[i] )); then caixa="${G}[✓]${N}"; (( sel += t )); else caixa="[ ]"; fi
+      printf "   %s %2d  %s%9s%s  %s\n" "$caixa" $i "$B" "$(humano $t)" "$N" "$desc"
+      [[ -n $nota ]] && print -r -- "                    ${D}↳ $nota${N}"
+      [[ -n $quem ]] && print -r -- "                    ${Y}⚠ feche o $quem pra limpar${N}"
+    done
+    print -r -- ""
+    print -r -- "  Encontrei ${B}$(humano $tot)${N} · Marcado: ${G}${B}$(humano $sel)${N}"
+  }
+
+  if [[ ! -t 0 ]]; then
+    _mostrar
+    print -r -- ""
+    print -r -- "  Pra limpar, rode no Terminal: disco-livre geral"
+    print -r -- "  (ou, por uma IA: disco-livre dados geral  →  disco-livre limpar-itens <ids>)"
+    return 0
+  fi
+
+  local r n
+  while true; do
+    _mostrar
+    print -r -- ""
+    print -r -- "  ${D}Números pra marcar/desmarcar (ex: 3 7) · t = marcar todo o seguro · r = conferir de novo depois de fechar apps${N}"
+    # sem resposta (entrada fechada, Ctrl+D) = sair sem limpar. Nunca limpa por padrão.
+    if ! read -r "r?  ${B}Enter${N} pra limpar o que está marcado · ${B}q${N} sai sem limpar: "; then
+      print -r -- ""; print -r -- "  Nada foi apagado."
+      return 0
+    fi
+    case $r in
+      "") break ;;
+      q|Q) print -r -- "  Nada foi apagado."; marcar_primeira; return 0 ;;
+      t|T) for (( i = 1; i <= ${#linhas}; i++ )); do
+             IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$linhas[i]"
+             [[ $nivel == seguro && -z $quem ]] && marc[i]=1
+           done ;;
+      r|R) print -r -- "  Conferindo…"
+           linhas=(${(f)"$(linhas_geral --nova)"}) ;;
+      *) for n in ${=r}; do
+           [[ $n == <-> ]] && (( n >= 1 && n <= ${#linhas} )) || continue
+           IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$linhas[n]"
+           if [[ -n $quem ]]; then
+             print -r -- "  ${Y}⚠ Feche o $quem primeiro e digite r pra eu conferir de novo.${N}"
+             continue
+           fi
+           (( marc[n] = !marc[n] ))
+         done ;;
+    esac
+  done
+
+  local -a escolhidas
+  for (( i = 1; i <= ${#linhas}; i++ )); do (( marc[i] )) && escolhidas+=("$linhas[i]"); done
+  if (( ${#escolhidas} == 0 )); then
+    print -r -- "  Nada marcado. Nada foi apagado."
+    marcar_primeira
+    return 0
+  fi
+
+  local soma=0 l2
+  for l2 in $escolhidas; do (( soma += ${${l2#*|*|}%%|*} )); done
+  print -r -- ""
+  if ! confirmar "  Limpar $(humano $soma) (${#escolhidas} itens)?"; then
+    print -r -- "  Nada foi apagado."
+    return 0
+  fi
+
+  local antes=$(livre_kb)
+  print -r -- "  Limpando…"
+  limpar_linhas "${escolhidas[@]}"
+  comemorar $antes
+}
+
+# Usado pelo app e pelas IAs: limpa só os ids escolhidos
+cmd_limpar_itens() {
+  local json=0 a
+  local -A quer
+  for a; do
+    case $a in
+      --json) json=1 ;;
+      *) quer[$a]=1 ;;
+    esac
+  done
+  (( ${#quer} )) || erro "use: disco-livre limpar-itens <id> [<id>…] [--json]  (ids em: disco-livre dados geral)"
+
+  local -a escolhidas
+  local l
+  for l in ${(f)"$(linhas_geral)"}; do
+    (( ${+quer[${l%%|*}]} )) && escolhidas+=("$l")
+  done
+  local antes=$(livre_kb)
+  limpar_linhas "${escolhidas[@]}"
+
+  if (( json )); then
+    local p sep=
+    print -rn -- "{\"liberado_kb\":$LIBERADO_KB,\"lixeira_kb\":$LIXEIRA_KB,\"itens\":$LIMPOS,\"livre_antes\":$antes,\"livre_depois\":$(livre_kb),\"pulados\":["
+    for p in $PULADOS; do
+      print -rn -- "$sep{\"desc\":$(js "${p%%|*}"),\"quem\":$(js "${p##*|}")}"; sep=,
+    done
+    print -r -- "]}"
+  else
+    comemorar $antes
+  fi
+}
+
+cmd_esvaziar_lixeira() {
+  if [[ $1 != --sim ]]; then
+    confirmar "Esvaziar a Lixeira? Isso apaga de vez o que está lá." || { print -r -- "Cancelado."; return 0; }
+  fi
+  local antes=$(livre_kb)
+  osascript -e 'tell application "Finder" to empty trash' >/dev/null 2>&1 || erro "não consegui esvaziar (o macOS pode pedir permissão pra controlar o Finder)"
+  log "esvaziou a Lixeira"
+  print -r -- "${G}✓${N} Lixeira esvaziada. Livre agora: $(humano $(livre_kb)) (antes $(humano $antes))"
+}
+
 # ─── dados pro app (JSON) ─────────────────────────────────────────────────
 
 js()   { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/ }; print -rn -- "\"$s\""; }
@@ -624,7 +951,7 @@ cmd_dados() {
       [[ $AUTO_LIMPEZA == sim ]] && al=1
       print -rn -- "{\"livre\":$(livre_kb),\"total\":$(total_kb),\"meta_kb\":$(gb_kb $META_GB),\"meta_gb\":$META_GB"
       print -rn -- ",\"vigilancia\":$(bool $at),\"auto_limpeza\":$(bool $al),\"intervalo\":$INTERVALO_HORAS"
-      print -rn -- ",\"tendencia_kb\":${tend:-null}"
+      print -rn -- ",\"tendencia_kb\":${tend:-null},\"primeira_feita\":$(primeira_feita && print -n true || print -n false)"
 
       print -rn -- ",\"lixo\":["; sep=
       while IFS='|' read -r t desc b tipo cam; do
@@ -655,7 +982,16 @@ cmd_dados() {
       done < <(listar_maiores 20)
       print -r -- "]"
       ;;
-    *) erro "use: disco-livre dados resumo|pastas" ;;
+    geral)
+      local id nivel quem nota
+      print -rn -- "{\"livre\":$(livre_kb),\"itens\":["; sep=
+      while IFS='|' read -r id nivel t quem desc nota tipo cam; do
+        vai_pra_lixeira "$tipo" && b=1 || b=0
+        print -rn -- "$sep{\"id\":$(js "$id"),\"nivel\":$(js "$nivel"),\"kb\":$t,\"quem\":$(js "$quem"),\"desc\":$(js "$desc"),\"nota\":$(js "$nota"),\"lixeira\":$(bool $b)}"; sep=,
+      done < <(linhas_geral --nova)
+      print -r -- "]}"
+      ;;
+    *) erro "use: disco-livre dados resumo|pastas|geral" ;;
   esac
 }
 
@@ -665,9 +1001,11 @@ ${B}disco-livre${N} — mantém seu Mac com espaço livre
 
 ${B}Uso:${N}
   disco-livre                      resumo: espaço livre, meta e vigilância
+  disco-livre geral                análise geral: acha o espaço escondido e você escolhe o que limpar
   disco-livre analisar             raio-x completo: o que ocupa espaço e por quê
   disco-livre limpar               mostra o lixo seguro (simulação)
   disco-livre limpar --executar    apaga o lixo seguro (pede confirmação)
+  disco-livre esvaziar-lixeira     esvazia a Lixeira (pede confirmação)
   disco-livre mover <pasta> <dest> move uma pasta pro HD externo e deixa um atalho
 
   disco-livre ativar               liga a vigilância automática
@@ -695,6 +1033,9 @@ case ${1:-status} in
   limpar)          shift; cmd_limpar "$@" ;;
   vigiar)          cmd_vigiar ;;
   dados)           cmd_dados "$2" ;;
+  geral)           cmd_geral "$2" ;;
+  limpar-itens)    shift; cmd_limpar_itens "$@" ;;
+  esvaziar-lixeira) cmd_esvaziar_lixeira "$2" ;;
   config)          shift; cmd_config "$@" ;;
   ativar)          cmd_ativar ;;
   desativar)       cmd_desativar ;;
