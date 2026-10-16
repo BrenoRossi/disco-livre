@@ -6,7 +6,7 @@ emulate -R zsh
 setopt NULL_GLOB
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-VERSAO="1.3.1"
+VERSAO="1.3.2"
 SCRIPT="${0:A}"
 DIR_CONF="${DISCO_LIVRE_DIR:-$HOME/.config/disco-livre}"
 CONF="$DIR_CONF/config"
@@ -961,7 +961,7 @@ cmd_esvaziar_lixeira() {
 # ─── me paga um café ──────────────────────────────────────────────────────
 
 PIX_CHAVE="c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67"
-PIX_COPIA_E_COLA="00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6007BRUSQUE62070503***63042C0D"
+PIX_COPIA_E_COLA="00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6014SANTA CATARINA62070503***6304C34D"
 
 cmd_apoiar() {
   print -rn -- "$PIX_COPIA_E_COLA" | pbcopy 2>/dev/null
@@ -971,7 +971,7 @@ cmd_apoiar() {
   print -r -- "  um Pix de qualquer valor me ajuda a manter e melhorar."
   print -r -- ""
   print -r -- "  ${G}✓${N} Pix Copia e Cola ${B}já está copiado${N}: é só colar no app do banco."
-  print -r -- "  Chave Pix: ${B}$PIX_CHAVE${N}  ${D}(Willian Claf · Brusque/SC)${N}"
+  print -r -- "  Chave Pix: ${B}$PIX_CHAVE${N}  ${D}(Willian Claf)${N}"
   print -r -- "  QR Code: no app (☕ no rodapé) ou em github.com/Willclaf/disco-livre#apoie"
   print -r -- ""
   print -r -- "  Valeu demais! 💚"

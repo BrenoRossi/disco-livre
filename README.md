@@ -183,9 +183,9 @@ O Disco Livre é **grátis e vai continuar grátis**. Se ele te ajudou, me paga 
 
 **Pix Copia e Cola:**
 ```
-00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6007BRUSQUE62070503***63042C0D
+00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6014SANTA CATARINA62070503***6304C34D
 ```
-Chave Pix: `c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67` · Willian Claf · Brusque/SC
+Chave Pix: `c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67` · Willian Claf
 
 Também dá pra apoiar pelo app (☕ no rodapé) ou no Terminal: `disco-livre apoiar`.
 

@@ -95,9 +95,9 @@ enum Instalador {
 
 enum Pix {
     static let chave = "c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67"
-    static let nome = "Willian Claf · Brusque/SC"
+    static let nome = "Willian Claf"
     /// BR Code (padrão do Banco Central), valor livre
-    static let copiaECola = "00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6007BRUSQUE62070503***63042C0D"
+    static let copiaECola = "00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6014SANTA CATARINA62070503***6304C34D"
 
     static func qr() -> NSImage? {
         guard let f = CIFilter(name: "CIQRCodeGenerator") else { return nil }
