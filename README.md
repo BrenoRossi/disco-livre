@@ -23,6 +23,13 @@ Em uma tarde voltaram **mais de 35 GB** sem apagar nada importante. Esta ferrame
 
 ## Instalar
 
+### Jeito mais fácil: baixar o instalador (.dmg)
+
+1. Baixe **[DiscoLivre.dmg](https://github.com/Willclaf/disco-livre/releases/latest/download/DiscoLivre.dmg)**
+2. Abra o arquivo e **arraste o Disco Livre pra pasta Aplicativos**
+3. Abra o Disco Livre. Na primeira vez, o Mac pode dizer que não verificou o desenvolvedor: vá em **Ajustes do Sistema → Privacidade e Segurança → Abrir Mesmo Assim** (no macOS 13/14: botão direito no app → Abrir)
+4. Pronto: ele se instala sozinho, aparece na barra de menus e já mostra quanto espaço escondido encontrou
+
 ### Jeito fácil: pela sua IA
 
 Abra o Claude Code, o Codex ou o Cursor e cole:

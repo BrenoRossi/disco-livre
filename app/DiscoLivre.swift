@@ -10,8 +10,9 @@ import SwiftUI
 // MARK: - Ferramenta de linha de comando
 
 enum CLI {
-    static let caminho = NSHomeDirectory() + "/.local/bin/disco-livre"
-    static let log = NSHomeDirectory() + "/Library/Logs/disco-livre.log"
+    static let casa = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+    static let caminho = casa + "/.local/bin/disco-livre"
+    static let log = casa + "/Library/Logs/disco-livre.log"
     static var existe: Bool { FileManager.default.isExecutableFile(atPath: caminho) }
 
     static func rodar(_ args: [String]) async -> String {
@@ -30,6 +31,63 @@ enum CLI {
                 cont.resume(returning: String(decoding: dados, as: UTF8.self))
             }
         }
+    }
+}
+
+// MARK: - Autoinstalação (pra quem baixou o .dmg e nunca abriu o Terminal)
+
+enum Instalador {
+    static let casa = CLI.casa
+
+    /// "VERSAO=\"1.3.0\"" → "1.3.0"
+    static func versao(_ caminho: String) -> String? {
+        guard let txt = try? String(contentsOfFile: caminho, encoding: .utf8) else { return nil }
+        for linha in txt.split(separator: "\n").prefix(30) where linha.hasPrefix("VERSAO=") {
+            return linha.dropFirst(7).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        }
+        return nil
+    }
+
+    /// Instala ou atualiza a ferramenta que vem dentro do app. Na primeira vez,
+    /// também liga a vigilância com a meta padrão (30 GB). Retorna true se instalou agora.
+    @discardableResult
+    static func garantir() async -> Bool {
+        let fm = FileManager.default
+        guard let embutida = Bundle.main.path(forResource: "disco-livre", ofType: nil) else { return false }
+        let primeiraVez = !fm.fileExists(atPath: casa + "/.config/disco-livre/config")
+        let atual = versao(CLI.caminho)
+        if atual != nil && atual == versao(embutida) && !primeiraVez { return false }
+
+        try? fm.createDirectory(atPath: casa + "/.local/bin", withIntermediateDirectories: true)
+        try? fm.removeItem(atPath: CLI.caminho)
+        guard (try? fm.copyItem(atPath: embutida, toPath: CLI.caminho)) != nil else { return false }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: CLI.caminho)
+
+        // skill pro Claude Code / Codex, se a pessoa usar
+        if let skill = Bundle.main.path(forResource: "skill-disco-livre", ofType: nil) {
+            for pasta in [".claude", ".codex"] where fm.fileExists(atPath: casa + "/" + pasta) {
+                let destino = casa + "/" + pasta + "/skills/disco-livre"
+                try? fm.createDirectory(atPath: casa + "/" + pasta + "/skills", withIntermediateDirectories: true)
+                try? fm.removeItem(atPath: destino)
+                try? fm.copyItem(atPath: skill, toPath: destino)
+            }
+        }
+
+        // comando disco-livre no Terminal
+        let zshrc = casa + "/.zshrc"
+        let atualZsh = (try? String(contentsOfFile: zshrc, encoding: .utf8)) ?? ""
+        if !atualZsh.contains(".local/bin") {
+            let linha = "\n# disco-livre\nexport PATH=\"$HOME/.local/bin:$PATH\"\n"
+            if let h = FileHandle(forWritingAtPath: zshrc) { h.seekToEndOfFile(); h.write(Data(linha.utf8)); h.closeFile() }
+            else { try? linha.write(toFile: zshrc, atomically: true, encoding: .utf8) }
+        }
+
+        if primeiraVez {
+            _ = await CLI.rodar(["config", "meta", "30"])
+            _ = await CLI.rodar(["config", "auto-limpeza", "nao"])
+            _ = await CLI.rodar(["ativar"])
+        }
+        return true
     }
 }
 
@@ -1144,6 +1202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }) { monitores.append(m) }
 
         Task {
+            await Instalador.garantir()   // instalou pelo .dmg? a ferramenta vem junto
             await estado.atualizar()
             // primeira vez (ou instalador pediu): abre sozinho e já faz a análise geral
             let boasVindas = CommandLine.arguments.contains("--boas-vindas")

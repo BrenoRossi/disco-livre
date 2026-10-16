@@ -19,6 +19,10 @@ swiftc -O -swift-version 5 icone.swift -o "$TMP/icone"
 "$TMP/icone" "$TMP/AppIcon.iconset"
 iconutil -c icns "$TMP/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 
+# a ferramenta e a skill vão dentro do app (autoinstalação pra quem baixa o .dmg)
+cp ../bin/disco-livre "$APP/Contents/Resources/disco-livre"
+cp -R ../skill/disco-livre "$APP/Contents/Resources/skill-disco-livre"
+
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
