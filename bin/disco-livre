@@ -6,7 +6,7 @@ emulate -R zsh
 setopt NULL_GLOB
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-VERSAO="1.1.0"
+VERSAO="1.2.0"
 SCRIPT="${0:A}"
 DIR_CONF="${DISCO_LIVRE_DIR:-$HOME/.config/disco-livre}"
 CONF="$DIR_CONF/config"
@@ -576,7 +576,13 @@ cmd_vigiar() {
     avisar "Seu disco está enchendo rápido" "Você perdeu $(humano $queda) nas últimas 24h. Rode: disco-livre analisar"
   fi
 
-  # 3) meta de espaço livre
+  # 3) versão nova (confere no máximo uma vez por dia)
+  if pode_avisar versao 86400; then
+    local nova=$(ultima_versao)
+    mais_nova "$nova" "$VERSAO" && avisar "Disco Livre $nova chegou" "Abra o app e clique em Atualizar, ou rode: disco-livre atualizar"
+  fi
+
+  # 4) meta de espaço livre
   if (( livre < meta )); then
     if [[ $AUTO_LIMPEZA == sim ]]; then
       cmd_limpar --executar --sim --silencioso
@@ -791,6 +797,7 @@ comemorar() {   # $1 = livre antes (KB)
     print -r -- "   ${Y}⚠${N}  Pulei ${p%%|*}: o ${p##*|} estava aberto."
   done
   print -r -- "  ${G}════════════════════════════════════════════════════${N}"
+  (( LIBERADO_KB > 0 )) && print -r -- "   ${D}☕ Curtiu? Me paga um café: disco-livre apoiar${N}"
   (( LIBERADO_KB > 0 )) && avisar "Disco Livre" "Você liberou $(humano $LIBERADO_KB). Agora: $(humano $agora) livres."
 }
 
@@ -937,6 +944,56 @@ cmd_esvaziar_lixeira() {
   print -r -- "${G}✓${N} Lixeira esvaziada. Livre agora: $(humano $(livre_kb)) (antes $(humano $antes))"
 }
 
+# ─── me paga um café ──────────────────────────────────────────────────────
+
+PIX_CHAVE="c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67"
+PIX_COPIA_E_COLA="00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6007BRUSQUE62070503***63042C0D"
+
+cmd_apoiar() {
+  print -rn -- "$PIX_COPIA_E_COLA" | pbcopy 2>/dev/null
+  print -r -- ""
+  print -r -- "  ☕ ${B}Me paga um café?${N}"
+  print -r -- "  O Disco Livre é grátis e vai continuar grátis. Se ele te ajudou,"
+  print -r -- "  um Pix de qualquer valor me ajuda a manter e melhorar."
+  print -r -- ""
+  print -r -- "  ${G}✓${N} Pix Copia e Cola ${B}já está copiado${N}: é só colar no app do banco."
+  print -r -- "  Chave Pix: ${B}$PIX_CHAVE${N}  ${D}(Willian Claf · Brusque/SC)${N}"
+  print -r -- "  QR Code: no app (☕ no rodapé) ou em github.com/Willclaf/disco-livre#apoie"
+  print -r -- ""
+  print -r -- "  Valeu demais! 💚"
+}
+
+# ─── atualização ──────────────────────────────────────────────────────────
+
+ultima_versao() {
+  curl -fsL --max-time 6 "https://api.github.com/repos/Willclaf/disco-livre/releases/latest" 2>/dev/null |
+    sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1
+}
+
+# verdadeiro se $1 for uma versão mais nova que $2
+mais_nova() {
+  [[ -n $1 && $1 != $2 ]] || return 1
+  [[ $(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1) == $1 ]]
+}
+
+cmd_atualizar() {
+  local nova=$(ultima_versao)
+  [[ -n $nova ]] || erro "não consegui ver a última versão (está sem internet?)"
+  if [[ $1 == --checar ]]; then
+    mais_nova "$nova" "$VERSAO" && print -r -- "$nova"
+    return 0
+  fi
+  if ! mais_nova "$nova" "$VERSAO" && [[ $1 != --forcar ]]; then
+    print -r -- "${G}✓${N} Você já está na versão mais nova ($VERSAO)."
+    return 0
+  fi
+  print -r -- "Atualizando o Disco Livre $VERSAO → $nova… ${D}(suas configurações ficam como estão)${N}"
+  zsh -c "$(curl -fsSL https://raw.githubusercontent.com/Willclaf/disco-livre/main/instalar.sh)" -- --sim --nao-abrir || erro "a atualização falhou"
+  log "atualizou: $VERSAO → $nova"
+  [[ -d "/Applications/Disco Livre.app" || -d "$HOME/Applications/Disco Livre.app" ]] && open -a "Disco Livre"
+  return 0
+}
+
 # ─── dados pro app (JSON) ─────────────────────────────────────────────────
 
 js()   { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/ }; print -rn -- "\"$s\""; }
@@ -949,7 +1006,7 @@ cmd_dados() {
       local tend=$(tendencia_kb) at=0 al=0
       ativo && at=1
       [[ $AUTO_LIMPEZA == sim ]] && al=1
-      print -rn -- "{\"livre\":$(livre_kb),\"total\":$(total_kb),\"meta_kb\":$(gb_kb $META_GB),\"meta_gb\":$META_GB"
+      print -rn -- "{\"versao\":\"$VERSAO\",\"livre\":$(livre_kb),\"total\":$(total_kb),\"meta_kb\":$(gb_kb $META_GB),\"meta_gb\":$META_GB"
       print -rn -- ",\"vigilancia\":$(bool $at),\"auto_limpeza\":$(bool $al),\"intervalo\":$INTERVALO_HORAS"
       print -rn -- ",\"tendencia_kb\":${tend:-null},\"primeira_feita\":$(primeira_feita && print -n true || print -n false)"
 
@@ -1006,6 +1063,8 @@ ${B}Uso:${N}
   disco-livre limpar               mostra o lixo seguro (simulação)
   disco-livre limpar --executar    apaga o lixo seguro (pede confirmação)
   disco-livre esvaziar-lixeira     esvazia a Lixeira (pede confirmação)
+  disco-livre atualizar            instala a versão mais nova (mantém suas configurações)
+  disco-livre apoiar               ☕ me paga um café (Pix)
   disco-livre mover <pasta> <dest> move uma pasta pro HD externo e deixa um atalho
 
   disco-livre ativar               liga a vigilância automática
@@ -1036,6 +1095,8 @@ case ${1:-status} in
   geral)           cmd_geral "$2" ;;
   limpar-itens)    shift; cmd_limpar_itens "$@" ;;
   esvaziar-lixeira) cmd_esvaziar_lixeira "$2" ;;
+  apoiar|cafe)     cmd_apoiar ;;
+  atualizar)       cmd_atualizar "$2" ;;
   config)          shift; cmd_config "$@" ;;
   ativar)          cmd_ativar ;;
   desativar)       cmd_desativar ;;

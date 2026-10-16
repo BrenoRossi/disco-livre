@@ -87,6 +87,7 @@ disco-livre analisar            # raio-x completo
 disco-livre limpar              # mostra o lixo seguro (só simula)
 disco-livre limpar --executar   # apaga o lixo seguro (pede confirmação)
 disco-livre esvaziar-lixeira    # esvazia a Lixeira (pede confirmação)
+disco-livre atualizar           # instala a versão mais nova (mantém suas configurações)
 disco-livre mover <pasta> <HD>  # manda uma pasta pro HD externo e deixa um atalho
 ```
 
@@ -165,10 +166,36 @@ A IA roda o raio-x, investiga as pastas estranhas, explica o que é cada coisa e
 
 ---
 
+## ☕ Apoie
+
+<a id="apoie"></a>
+
+O Disco Livre é **grátis e vai continuar grátis**. Se ele te ajudou, me paga um café: um Pix de qualquer valor me ajuda a manter e melhorar o projeto. 💚
+
+<img src="assets/pix-qr.png" alt="QR Code Pix" width="200">
+
+**Pix Copia e Cola:**
+```
+00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6007BRUSQUE62070503***63042C0D
+```
+Chave Pix: `c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67` · Willian Claf · Brusque/SC
+
+Também dá pra apoiar pelo app (☕ no rodapé) ou no Terminal: `disco-livre apoiar`.
+
+---
+
 ## Desinstalar
 
 ```bash
 ./uninstall.sh
 ```
+
+---
+
+## Atualizar
+
+O app avisa quando sai versão nova (botão **⬆️** no rodapé) e a vigilância manda uma notificação. É só clicar, ou rodar `disco-livre atualizar`. Suas configurações ficam como estão.
+
+Quem tem a versão 1.0 ou 1.1 precisa rodar o comando de instalação de novo uma vez. Daí pra frente, a atualização é com um clique.
 
 Licença MIT. Feito com raiva de "Dados do Sistema: 63 GB". 😤

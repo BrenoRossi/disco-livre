@@ -62,7 +62,17 @@ for dir in "$HOME/.claude" "$HOME/.codex"; do
   fi
 done
 
-# 3. Configuração
+# 3. Configuração (numa atualização, mantém o que a pessoa já tinha escolhido)
+CONF_ATUAL="$HOME/.config/disco-livre/config"
+ATUALIZANDO=
+if [[ -f $CONF_ATUAL ]]; then
+  ATUALIZANDO=1
+  [[ -z $META ]] && META=$(sed -n 's/^META_GB=//p' "$CONF_ATUAL")
+  [[ -z $AUTO ]] && AUTO=$(sed -n 's/^AUTO_LIMPEZA=//p' "$CONF_ATUAL")
+  if [[ -z $VIGIA ]]; then
+    [[ -f $HOME/Library/LaunchAgents/com.disco-livre.vigia.plist ]] && VIGIA=sim || VIGIA=nao
+  fi
+fi
 if (( PERGUNTAR )); then
   print -r -- ""
   [[ -z $META ]]  && { read -r "META?Quantos GB livres você quer manter no mínimo? [30] " || true; }
@@ -143,10 +153,15 @@ print -r -- "${G}${B}Pronto!${N} 🎉"
 # 5. Primeira impressão: a análise geral do Mac
 if [[ -z $NAO_ABRIR ]]; then
   if [[ -n $APP_OK ]]; then
-    open "$DEST/Disco Livre.app" --args --boas-vindas
-    print -r -- ""
-    print -r -- "👉 ${B}Olhe lá em cima, na barra de menus:${N} o Disco Livre abriu a análise geral do seu Mac."
-    print -r -- "   Ele mostra quanto espaço escondido encontrou e você escolhe o que limpar."
+    if [[ -n $ATUALIZANDO ]]; then
+      open "$DEST/Disco Livre.app"
+      print -r -- "Atualizado! O Disco Livre está de volta na barra de menus."
+    else
+      open "$DEST/Disco Livre.app" --args --boas-vindas
+      print -r -- ""
+      print -r -- "👉 ${B}Olhe lá em cima, na barra de menus:${N} o Disco Livre abriu a análise geral do seu Mac."
+      print -r -- "   Ele mostra quanto espaço escondido encontrou e você escolhe o que limpar."
+    fi
   elif (( PERGUNTAR )); then
     "$BIN/disco-livre" geral
   fi

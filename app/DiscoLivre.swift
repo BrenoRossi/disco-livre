@@ -3,6 +3,7 @@
 // Usa a ferramenta `disco-livre` (~/.local/bin) por baixo.
 
 import AppKit
+import CoreImage
 import ServiceManagement
 import SwiftUI
 
@@ -29,6 +30,31 @@ enum CLI {
                 cont.resume(returning: String(decoding: dados, as: UTF8.self))
             }
         }
+    }
+}
+
+// MARK: - Apoio (Pix)
+
+enum Pix {
+    static let chave = "c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67"
+    static let nome = "Willian Claf · Brusque/SC"
+    /// BR Code (padrão do Banco Central), valor livre
+    static let copiaECola = "00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6007BRUSQUE62070503***63042C0D"
+
+    static func qr() -> NSImage? {
+        guard let f = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        f.setValue(Data(copiaECola.utf8), forKey: "inputMessage")
+        f.setValue("M", forKey: "inputCorrectionLevel")
+        guard let img = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 10, y: 10)) else { return nil }
+        let rep = NSCIImageRep(ciImage: img)
+        let ns = NSImage(size: rep.size)
+        ns.addRepresentation(rep)
+        return ns
+    }
+
+    static func copiar(_ texto: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(texto, forType: .string)
     }
 }
 
@@ -131,6 +157,41 @@ final class Estado: ObservableObject {
     @Published var resultado: ResultadoLimpeza?
     @Published var esvaziandoLixeira = false
     @Published var lixeiraVazia = false
+    @Published var mostrandoApoio = false
+    @Published var novaVersao: String?
+    @Published var atualizando = false
+
+    static var versaoDoApp: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
+    /// verdadeiro se a versão a for mais nova que b ("1.10.0" > "1.9.2")
+    static func maisNova(_ a: String, que b: String) -> Bool {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }, y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0
+            if p != q { return p > q }
+        }
+        return false
+    }
+
+    func checarAtualizacao() async {
+        guard let url = URL(string: "https://api.github.com/repos/Willclaf/disco-livre/releases/latest"),
+              let (dados, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: dados) as? [String: Any],
+              let tag = json["tag_name"] as? String else { return }
+        let v = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        novaVersao = Estado.maisNova(v, que: Estado.versaoDoApp) ? v : nil
+    }
+
+    /// Roda o atualizador da ferramenta. Ele fecha e reabre o app sozinho.
+    func atualizarApp() {
+        atualizando = true
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-c", "\"$HOME/.local/bin/disco-livre\" atualizar >> \"$HOME/Library/Logs/disco-livre.log\" 2>&1"]
+        try? p.run()
+    }
 
     var aoAtualizar: (() -> Void)?
     private var ultimaAtualizacao = Date.distantPast
@@ -422,6 +483,8 @@ struct PainelView: View {
         VStack(alignment: .leading, spacing: 0) {
             if !CLI.existe {
                 semFerramenta
+            } else if e.mostrandoApoio {
+                ApoioView()
             } else if e.fase != .fechada {
                 AnaliseGeralView()
             } else if let r = e.resumo {
@@ -446,9 +509,10 @@ struct PainelView: View {
                     .padding(20)
             }
         }
-        .frame(width: e.fase == .fechada ? 300 : 340)
+        .frame(width: e.fase == .fechada || e.mostrandoApoio ? 300 : 340)
         .animation(.easeInOut(duration: 0.2), value: detalhes)
         .animation(.easeInOut(duration: 0.25), value: e.fase)
+        .animation(.easeInOut(duration: 0.25), value: e.mostrandoApoio)
     }
 
     var semFerramenta: some View {
@@ -563,6 +627,20 @@ struct PainelView: View {
                 }
             }
             Spacer()
+            if let v = e.novaVersao {
+                Button { e.atualizarApp() } label: {
+                    if e.atualizando {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Text("⬆️ \(v)")
+                    }
+                }
+                .buttonStyle(Capsula(cor: .blue))
+                .disabled(e.atualizando)
+                .help("Versão nova do Disco Livre. Clique pra atualizar (suas configurações ficam).")
+            }
+            Button { e.mostrandoApoio = true } label: { Text("☕").font(.system(size: 14)) }
+                .help("Me paga um café — o Disco Livre é grátis")
             Button { Task { await e.atualizar() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Atualizar")
         }
@@ -908,6 +986,13 @@ struct AnaliseGeralView: View {
             }
             Button { e.concluirGeral() } label: { Text("Concluir").frame(maxWidth: .infinity) }
                 .buttonStyle(Capsula(cor: .blue))
+            if liberado > 0 {
+                Button { e.mostrandoApoio = true } label: {
+                    Text("☕ Curtiu? Me paga um café").font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(18)
@@ -947,6 +1032,71 @@ struct AnaliseGeralView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+    }
+}
+
+// MARK: - Me paga um café
+
+struct ApoioView: View {
+    @EnvironmentObject var e: Estado
+    @State private var copiado: String?
+    @State private var vapor = false
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Button { e.mostrandoApoio = false } label: {
+                    Label("Voltar", systemImage: "chevron.left").font(.caption)
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+            }
+            Text("☕")
+                .font(.system(size: 40))
+                .offset(y: vapor ? -2 : 2)
+                .onAppear { withAnimation(.easeInOut(duration: 1.2).repeatForever()) { vapor = true } }
+            VStack(spacing: 4) {
+                Text("Me paga um café?").font(.headline)
+                Text("O Disco Livre é grátis e vai continuar grátis. Se ele te ajudou, um Pix de qualquer valor me ajuda a manter e melhorar.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let qr = Pix.qr() {
+                Image(nsImage: qr)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 160, height: 160)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white))
+                    .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                    .help("Aponte a câmera do app do seu banco")
+            }
+            Text("Aponte a câmera do app do banco").font(.caption2).foregroundStyle(.secondary)
+
+            Button {
+                Pix.copiar(Pix.copiaECola)
+                copiado = "Pix Copia e Cola copiado ✓"
+            } label: {
+                Label("Copiar Pix Copia e Cola", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(Capsula(cor: .green))
+
+            Button("Copiar só a chave") {
+                Pix.copiar(Pix.chave)
+                copiado = "Chave Pix copiada ✓"
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+
+            if let c = copiado {
+                Text(c).font(.caption).foregroundStyle(.green)
+            }
+            Text(Pix.nome).font(.caption2).foregroundStyle(.tertiary)
+            Text("Valeu demais! 💚").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -1005,6 +1155,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--mostrar") { abrir(fixo: true) }
         Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.estado.atualizar() }
+        }
+        // versão nova: confere ao abrir e a cada 6 h
+        Task { await estado.checarAtualizacao() }
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.estado.checarAtualizacao() }
         }
     }
 
