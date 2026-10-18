@@ -1,208 +1,101 @@
-# disco-livre 🧹
+# Disco Livre — fork com correções de segurança
 
-**Seu Mac nunca mais fica sem espaço do nada.**
+Fork de [Willclaf/disco-livre](https://github.com/Willclaf/disco-livre), sob a licença MIT original. Esta versão corrige os problemas encontrados na auditoria da 1.3.2. Consulte [SECURITY.md](SECURITY.md) para os limites e [CHANGELOG.md](CHANGELOG.md) para as mudanças.
 
-O `disco-livre` mostra o que está comendo o seu disco (inclusive as pastas que o Finder esconde), limpa só o que é lixo de verdade e fica de olho em segundo plano. Quando o espaço livre fica abaixo da sua meta, ele te avisa.
+O aplicativo mostra o espaço livre na barra de menus, analisa pastas e permite escolher itens para limpeza. Há também uma CLI zsh e uma skill para Claude Code/Codex. Funciona no macOS 13 ou posterior, Intel e Apple Silicon.
 
-Ele funciona sozinho, direto no Terminal. E também vem com uma **skill pro Claude Code e pro Codex**: é só falar "meu Mac tá sem espaço" que a IA roda a análise e te explica tudo em português.
+## Padrões desta versão
 
----
+- Vigilância e limpezas começam desligadas. Configurações antigas precisam de novo consentimento para limpeza automática.
+- Relatórios de falhas só entram na limpeza automática quando **auto-limpeza e limpar-crash** estão ligados. Desligar auto-limpeza impede ambas as exclusões automáticas.
+- A simulação `DISCO_LIVRE_SIMULAR=1` impede instalação, exclusões, movimentação, atualização e alteração de tarefas/configuração. Somente o registro de simulação pode ser escrito.
+- A limpeza recalcula o alvo no catálogo atual e recusa ids forjados, caminhos com links e alvos fora da pasta pessoal.
+- Falhas são reportadas. “Aumento medido” vem da diferença de espaço livre do volume; pode ser afetado por outros aplicativos e pelo APFS. Não é a soma de estimativas antigas.
 
-## Por que isso existe
+## Instalar um commit revisado
 
-Num dia normal, o Mac ficou com **9 GB livres de 228 GB**. Os culpados:
+**Este fork não publica um DMG notarizado.** O aplicativo é compilado do fonte local. Não use os binários da versão original para obter estas correções. O instalador não remove a quarentena do macOS nem executa scripts baixados da branch `main`.
 
-- **16 GB de relatórios de crash.** Um app entrou em loop e gerou quase 200 mil arquivos em 3 dias, numa pasta que ninguém vê.
-- **A pasta "Filmes" pesava 4 GB e aparecia vazia.** Eram stills do DaVinci Resolve guardados numa pasta oculta.
-- **8 GB de cache do Lightroom** no SSD.
-- **"Meu Chrome perdeu todos os perfis."** Uma automação instalou uma tarefa que abria um Chrome separado e reabria ele toda vez que era fechado. Os perfis estavam lá, intactos.
+Requisitos: Git; ferramentas de linha de comando da Apple para compilar o aplicativo (`swiftc`, `lipo`, `iconutil`). A CLI usa os utilitários do macOS, sem pacotes de terceiros. Python 3 só é necessário para os testes.
 
-Em uma tarde voltaram **mais de 35 GB** sem apagar nada importante. Esta ferramenta é tudo isso empacotado, pra não acontecer de novo.
-
----
-
-## Instalar
-
-### Jeito mais fácil: baixar o instalador (.dmg)
-
-1. Baixe **[DiscoLivre.dmg](https://github.com/Willclaf/disco-livre/releases/latest/download/DiscoLivre.dmg)**
-2. Abra o arquivo e **arraste o Disco Livre pra pasta Aplicativos**
-3. Abra o Disco Livre. Na primeira vez, o Mac pode dizer que não verificou o desenvolvedor: vá em **Ajustes do Sistema → Privacidade e Segurança → Abrir Mesmo Assim** (no macOS 13/14: botão direito no app → Abrir)
-4. Pronto: ele se instala sozinho, aparece na barra de menus e já mostra quanto espaço escondido encontrou
-
-### Jeito fácil: pela sua IA
-
-Abra o Claude Code, o Codex ou o Cursor e cole:
-
-> Instale o disco-livre pra mim: https://github.com/Willclaf/disco-livre — siga o AGENTS.md do repositório.
-
-A IA baixa o projeto, pergunta a sua meta de espaço, instala tudo e confere se funcionou. Você só aprova o que ela pedir.
-
-### Jeito manual: uma linha no Terminal
-
-```bash
-zsh -c "$(curl -fsSL https://raw.githubusercontent.com/Willclaf/disco-livre/main/instalar.sh)"
+```sh
+git clone https://github.com/BrenoRossi/disco-livre.git
+cd disco-livre
+git log --oneline -5
 ```
 
-Não precisa de git nem de nenhuma ferramenta da Apple: o app vem pronto (e é conferido por SHA-256 antes de instalar). O instalador pergunta a sua meta de espaço livre e, no fim, **o Disco Livre abre a análise geral do seu Mac**.
+Revise o código e selecione um SHA completo de 40 caracteres. Substitua `<SHA_REVISADO>` nas duas linhas:
 
-Pra instalar sem perguntas: `… instalar.sh)" -- --sim --meta 30 --vigia sim --auto-limpeza nao`
-
-Requisitos: macOS 13 (Ventura) ou mais novo, Intel ou Apple Silicon.
-
----
-
-## A primeira análise: o espaço que estava escondido
-
-Logo depois de instalar, o Disco Livre vasculha o Mac e mostra **quanto dá pra liberar**:
-
-- **Seguro** (já vem marcado): caches de navegador, de apps (Claude, Codex, Cursor, Slack, Figma…), de programação (npm, pip, uv…), do Lightroom, relatórios de crash, logs velhos, atualizações já baixadas
-- **Revise** (só sai se você marcar, e vai pra Lixeira): instaladores .dmg/.pkg esquecidos em Downloads, conversas antigas do Codex, modelos de IA baixados, navegadores do Playwright
-- O que está **em uso** aparece com cadeado: "feche o Chrome pra limpar". Fechou? É só clicar em **conferir de novo**.
-
-Você escolhe, clica em **Liberar** e vê: **🎉 Você liberou X GB que estavam escondidos.** O que foi pra Lixeira aparece separado, com um botão pra esvaziar.
-
-Dá pra rodar de novo quando quiser: no app (**Ver mais → Fazer análise geral**) ou no Terminal (`disco-livre geral`).
-
----
-
-## O app da barra de menus
-
-Um ícone pequeno de disco mostra quantos GB você tem livres. **Passou o mouse, abre o resumo. Tirou, fecha.** Se clicar, ele fica aberto até você clicar fora.
-
-O resumo mostra só quatro coisas:
-
-| | |
-|---|---|
-| 🟢 **Espaço livre** | anel colorido (verde, laranja ou vermelho) com um tique marcando a sua meta |
-| 🚩 **Meta** | − / + pra ajustar quantos GB livres você quer manter |
-| 👁 **Vigia** | liga e desliga a vigilância automática |
-| ✨ **Pra limpar** | quanto lixo seguro existe, com o botão **Limpar** |
-
-O **Ver mais** abre os detalhes: alertas (app crashando, tarefa que reabre app sozinha, com botão **Pausar**), o que exatamente dá pra limpar, as maiores pastas (inclusive as ocultas) e os ajustes.
-
-Quando o espaço livre fica abaixo da meta, o ícone fica vermelho.
-
----
-
-## Usar no Terminal
-
-```bash
-disco-livre                     # resumo: espaço livre, meta, vigilância
-disco-livre geral               # análise geral: acha o espaço escondido, você escolhe o que limpar
-disco-livre analisar            # raio-x completo
-disco-livre limpar              # mostra o lixo seguro (só simula)
-disco-livre limpar --executar   # apaga o lixo seguro (pede confirmação)
-disco-livre esvaziar-lixeira    # esvazia a Lixeira (pede confirmação)
-disco-livre atualizar           # instala a versão mais nova (mantém suas configurações)
-disco-livre mover <pasta> <HD>  # manda uma pasta pro HD externo e deixa um atalho
+```sh
+git checkout --detach <SHA_REVISADO>
+./install.sh --revisao <SHA_REVISADO>
 ```
 
-### O raio-x (`disco-livre analisar`)
+O instalador recusa um SHA diferente do checkout ou alterações locais em arquivos versionados. Ele copia CLI/skill/configuração e compila o app; só ativa a vigilância se você escolher isso. A compilação local é assinada ad hoc, sem certificado de distribuição Apple. Para instalar apenas a CLI, acrescente `--sem-app`.
 
-```
-1. Lixo seguro (é recriado sozinho)
-  948 MB    Logs com mais de 7 dias
-  8.5 GB    Cache do Chrome (feche o app pra limpar)
-  8.0 GB    Cache do Camera Raw (Lightroom/Photoshop)
-  Total: 10.9 GB
+Para aceitar os padrões sem interação, use `--sim --vigia nao --auto-limpeza nao --nao-abrir`. Nesse instalador, `--sim` significa “sim, aceitar padrões”; a **simulação sem alterações** é sempre a variável `DISCO_LIVRE_SIMULAR=1`.
 
-2. Apps crashando em massa
-  ✗ Codex gerou 194975 relatórios de crash (16.0 GB)
+Não houve instalação do app ou ativação de serviços durante o desenvolvimento destas correções.
 
-3. Maiores pastas pra revisar
-  10.7 GB   ~/.lmstudio (oculta no Finder)
-            ↳ Modelos de IA locais. Apague os que não usa ou mova pro HD externo
-  3.4 GB    ~/Movies/.gallery (oculta no Finder)
-            ↳ Stills da galeria do DaVinci Resolve. disco-livre mover pro HD externo
+## Usar
 
-4. Tarefas em segundo plano
-  ⚠ com.exemplo.chrome abre Google Chrome sozinho e reabre se você fechar
-
-5. Navegadores com controle remoto
-  ⚠ Google Chrome está com controle remoto ligado (porta 9222)
+```sh
+disco-livre                     # resumo
+disco-livre dados geral          # análise em JSON
+disco-livre geral                # análise com seleção e confirmação
+disco-livre limpar               # estimativa, sem excluir
+disco-livre limpar --executar    # pede confirmação antes de excluir
+disco-livre limpar-itens <ids> --json  # somente ids escolhidos da análise
+disco-livre config              # configurações
+disco-livre ativar               # opt-in: instala o vigia a cada 3 horas
+disco-livre desativar            # para o vigia e remove seu LaunchAgent
 ```
 
-### Configuração
+`limpar-itens` devolve `erros` por item e status diferente de zero se houver falha. Itens em uso aparecem em `pulados`. O cache da análise nunca autoriza, sozinho, uma exclusão. Logs ficam em `~/Library/Logs/disco-livre.log`.
 
-```bash
-disco-livre config                     # ver tudo
-disco-livre config meta 30             # espaço livre mínimo (GB)
-disco-livre config auto-limpeza sim    # limpar sozinho quando passar da meta
-disco-livre config intervalo 3         # vigiar a cada 3 horas
-disco-livre ativar / desativar         # liga/desliga a vigilância
+Para permitir limpeza automática abaixo da meta:
+
+```sh
+disco-livre config auto-limpeza sim
 ```
 
-### A vigilância avisa quando
+Para permitir também a exclusão automática de relatórios acumulados, habilite separadamente `disco-livre config limpar-crash sim`. A interface mostra ambos os controles. Relatórios são evidências úteis para diagnóstico; mantenha a opção desligada enquanto investiga falhas.
 
-- o espaço livre fica **abaixo da sua meta**
-- o disco perde **mais de 10 GB em 24 h** (algo novo está enchendo)
-- um app entra em **loop de crash** (os relatórios são apagados sozinhos)
+Esvaziar a Lixeira exige confirmação e apaga **todo o conteúdo dela**, não apenas itens enviados pelo Disco Livre.
 
-Tudo o que ele apaga fica anotado em `~/Library/Logs/disco-livre.log`.
+## Mover pastas com recuperação
 
-### Tarefas em segundo plano
-
-```bash
-disco-livre pausar-tarefa com.exemplo.tarefa    # para e não volta ao reiniciar
-disco-livre religar-tarefa com.exemplo.tarefa   # desfaz
+```sh
+disco-livre mover <pasta> <destino>
 ```
 
----
+A função copia com `ditto`, verifica cada entrada, conteúdo, links, permissões, atributos estendidos e ACLs, e mantém a origem com o nome `.disco-livre-backup-...`. No caminho original fica um link para o destino. **O backup continua ocupando espaço:** revise a cópia antes de remover o backup manualmente. O Disco Livre não o apaga.
 
-## O que ele apaga (e o que nunca apaga)
-
-**Apaga só lixo que se recria sozinho:**
-relatórios de crash · logs com mais de 7 dias · cache do npm, pip, uv, Yarn e Homebrew · Xcode DerivedData · cache do Chrome, Edge, Brave e Opera GX · cache do Camera Raw · atualizações de apps já baixadas
-
-**Nunca apaga:**
-seus arquivos · fotos · projetos · perfis de navegador · modelos de IA · nada fora da sua pasta pessoal
-
-Caches de apps abertos são pulados. Ele pede pra você fechar o app primeiro.
-O `mover` só apaga o original depois de conferir que a cópia tem o mesmo número de arquivos e os mesmos bytes.
-
----
-
-## Skill pro Claude Code / Codex
-
-O `install.sh` copia a skill pra `~/.claude/skills/` e `~/.codex/skills/` (se existirem). Depois disso, é só pedir:
-
-> "Meu Mac tá sem espaço, me ajuda"
-
-A IA roda o raio-x, investiga as pastas estranhas, explica o que é cada coisa e **pede sua permissão** antes de mexer em qualquer coisa.
-
----
-
-## ☕ Apoie
-
-<a id="apoie"></a>
-
-O Disco Livre é **grátis e vai continuar grátis**. Se ele te ajudou, me paga um café: um Pix de qualquer valor me ajuda a manter e melhorar o projeto. 💚
-
-<img src="assets/pix-qr.png" alt="QR Code Pix" width="200">
-
-**Pix Copia e Cola:**
-```
-00020126580014br.gov.bcb.pix0136c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb675204000053039865802BR5912WILLIAN CLAF6014SANTA CATARINA62070503***6304C34D
-```
-Chave Pix: `c6a0d335-775a-4a2e-bb7a-2dfbf3f2cb67` · Willian Claf
-
-Também dá pra apoiar pelo app (☕ no rodapé) ou no Terminal: `disco-livre apoiar`.
-
----
-
-## Desinstalar
-
-```bash
-./uninstall.sh
-```
-
----
+Pastas em uso, arquivos especiais, diferenças de conteúdo e metadados alterados durante a operação causam recusa ou restauração da origem. Pastas sincronizadas por FileProvider podem mudar enquanto são copiadas e ser recusadas. Feche os aplicativos e aguarde a sincronização. Não mova uma máquina virtual em execução.
 
 ## Atualizar
 
-O app avisa quando sai versão nova (botão **⬆️** no rodapé) e a vigilância manda uma notificação. É só clicar, ou rodar `disco-livre atualizar`. Suas configurações ficam como estão.
+`disco-livre atualizar` mostra instruções; o botão do app abre as releases do fork para revisão. Nenhum deles baixa e executa código remoto. Revise e instale outro checkout limpo pelo SHA completo, como na instalação inicial.
 
-Quem tem a versão 1.0 ou 1.1 precisa rodar o comando de instalação de novo uma vez. Daí pra frente, a atualização é com um clique.
+## Testar e compilar
 
-Licença MIT. Feito com raiva de "Dados do Sistema: 63 GB". 😤
+```sh
+python3 -m unittest discover -s tests -v
+zsh -n bin/disco-livre
+swiftc -typecheck -swift-version 5 -parse-as-library app/DiscoLivre.swift
+./app/build.sh
+```
+
+Os testes usam pastas temporárias dedicadas em HOME, fora de Documentos/FileProvider, sem reatribuir HOME. Nenhum instalador real, serviço, Finder ou dado pessoal é usado. Para provar as regressões na versão original, `DISCO_LIVRE_TEST_SOURCE` pode apontar para o CLI imutável da auditoria.
+
+```sh
+DISCO_LIVRE_SIMULAR=1 disco-livre vigiar
+```
+
+Nesse exemplo não há exclusão nem ativação de serviço. O registro fica em `~/.config/disco-livre/simulado.log`.
+
+## Remover e créditos
+
+`./uninstall.sh` remove CLI, app, skill, configuração e vigia, preservando o log. Não desfaz limpezas nem movimentações. Se você habilitou “Abrir ao ligar o Mac”, desligue essa opção antes de remover o app.
+
+Projeto original e créditos: [Willian Claf / Willclaf](https://github.com/Willclaf/disco-livre). O botão de apoio incluído no aplicativo continua destinado ao autor original. As correções deste fork não representam aprovação ou publicação pelo projeto original.
