@@ -7,6 +7,8 @@ description: Analisa espaço no Mac com a CLI disco-livre e propõe limpezas por
 
 Use somente a CLI deste fork, em um commit revisado. Se ela não estiver instalada, explique o procedimento do README; não execute instaladores remotos nem instale sem pedido do usuário.
 
+O modo somente analisar é o padrão; não o desligue sem autorização explícita para alterar os dados. Toda limpeza envia à Lixeira. Dados protegidos não devem ser contornados.
+
 1. Rode `disco-livre dados geral` para analisar e apresente itens, estimativas e bloqueios por app em uso. O histórico de conversas e modelos de IA são dados do usuário, não lixo presumido.
 2. Peça autorização para os itens específicos, salvo se ela já estiver clara no pedido atual. Depois rode `disco-livre limpar-itens <ids autorizados> --json`.
 3. Leia o código de saída, a lista `erros` e os `pulados`. Falha ou resultado ilegível não é sucesso.

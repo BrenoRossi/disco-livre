@@ -6,7 +6,9 @@ O aplicativo mostra o espaço livre na barra de menus, analisa pastas e permite 
 
 ## Padrões desta versão
 
+- **Somente analisar começa ligado:** bloqueia limpeza manual/automática, movimentação, alteração de tarefas e esvaziamento da Lixeira. Análise, alertas, configuração e histórico continuam disponíveis.
 - Vigilância e limpezas começam desligadas. Configurações antigas precisam de novo consentimento para limpeza automática.
+- Limpeza envia os itens à Lixeira, sem exclusão permanente direta. Documentos, fotos, máquinas virtuais e backups reconhecidos são recusados mesmo dentro de caches; uma pasta com dados protegidos é recusada inteira. A lista de tipos é conservadora e não identifica todo formato de dado pessoal possível.
 - Relatórios de falhas só entram na limpeza automática quando **auto-limpeza e limpar-crash** estão ligados. Desligar auto-limpeza impede ambas as exclusões automáticas.
 - A simulação `DISCO_LIVRE_SIMULAR=1` impede instalação, exclusões, movimentação, atualização e alteração de tarefas/configuração. Somente o registro de simulação pode ser escrito.
 - A limpeza recalcula o alvo no catálogo atual e recusa ids forjados, caminhos com links e alvos fora da pasta pessoal.
@@ -53,15 +55,18 @@ disco-livre desativar            # para o vigia e remove seu LaunchAgent
 
 `limpar-itens` devolve `erros` por item e status diferente de zero se houver falha. Itens em uso aparecem em `pulados`. O cache da análise nunca autoriza, sozinho, uma exclusão. Logs ficam em `~/Library/Logs/disco-livre.log`.
 
-Para permitir limpeza automática abaixo da meta:
+O modo recomendado é somente analisar. No app, os candidatos mostram caminho, tamanho e motivo, e o menu de contexto permite mostrar no Finder. Nada vem pré-selecionado. Para habilitar alterações manualmente, desligue o modo nos Ajustes (com confirmação) ou use `disco-livre config somente-analisar nao`. Trocar esse modo desliga as duas limpezas automáticas. Ativar/desativar a vigilância continua permitido.
+
+Para permitir limpeza automática abaixo da meta (envio à Lixeira; exige modo de edição):
 
 ```sh
+disco-livre config somente-analisar nao
 disco-livre config auto-limpeza sim
 ```
 
 Para permitir também a exclusão automática de relatórios acumulados, habilite separadamente `disco-livre config limpar-crash sim`. A interface mostra ambos os controles. Relatórios são evidências úteis para diagnóstico; mantenha a opção desligada enquanto investiga falhas.
 
-Esvaziar a Lixeira exige confirmação e apaga **todo o conteúdo dela**, não apenas itens enviados pelo Disco Livre.
+Esvaziar a Lixeira exige modo de edição, a opção explícita `--confirmar-exclusao-permanente` e confirmação, e apaga **todo o conteúdo dela**, não apenas itens enviados pelo Disco Livre.
 
 ## Mover pastas com recuperação
 
@@ -95,6 +100,20 @@ DISCO_LIVRE_SIMULAR=1 disco-livre vigiar
 ```
 
 Nesse exemplo não há exclusão nem ativação de serviço. O registro fica em `~/.config/disco-livre/simulado.log`.
+
+## Assinatura Developer ID e notarização
+
+A compilação comum habilita Hardened Runtime, mas ainda usa assinatura ad hoc. Não existe release notarizada publicada por este fork. Para gerar uma distribuição reconhecida pelo Gatekeeper, é necessário certificado **Developer ID Application com chave privada** no chaveiro e um perfil de credenciais local do `notarytool`. Requer Apple Developer Program. Não coloque credenciais no código, no chat ou nos logs.
+
+Depois de revisar o commit e configurar o perfil no chaveiro pelas ferramentas da Apple:
+
+```sh
+./scripts/notarizar.sh 'Developer ID Application: NOME (TEAMID)' 'perfil-local'
+```
+
+O script compila, assina uma cópia temporária com timestamp/Hardened Runtime, submete à Apple, exige status `Accepted`, anexa o ticket com `stapler`, valida-o e verifica o Gatekeeper com `spctl`. Só então gera o ZIP final e SHA-256. Não instala, não abre e não publica o artefato. Sem certificado/perfil válidos, o processo para com erro. Uma notarização não certifica a lógica de limpeza.
+
+Referências: [Developer ID](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/) e [notarização Apple](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
 
 ## Remover e créditos
 

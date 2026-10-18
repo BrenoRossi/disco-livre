@@ -39,7 +39,7 @@ class CLISafetyTests(unittest.TestCase):
         self.library = self.fixture / "library.zsh"
         self.library.write_text(source)
 
-    def shell(self, body):
+    def shell(self, body, *, analysis_mode="nao"):
         environment = dict(os.environ)
         environment.pop("DISCO_LIVRE_SIMULAR", None)
         environment.update(
@@ -57,7 +57,24 @@ ultima_versao() { return 0; }
 # Tests of normal copies use the OS-boundary state "no open handles".
 # A separate regression exercises rejection of an occupied directory.
 lsof() { return 1; }
+# Emulate Trash only inside fixtures; never send test files to the real Trash.
+function /usr/bin/trash {
+  local f
+  mkdir -p "$TEST_FIXTURE/fake-trash"
+  for f in "$@"; do
+    [[ $f == -- ]] && continue
+    [[ $f == $TEST_FIXTURE/* ]] || return 99
+    command mv "$f" "$TEST_FIXTURE/fake-trash/${f:t}" || return
+  done
+}
+osascript() {
+  local f=${@[-1]}
+  [[ $f == $TEST_FIXTURE/* && -e $f ]] && /usr/bin/trash "$f"
+  return 0
+}
 '''
+        if analysis_mode is not None:
+            setup += f"\nSOMENTE_ANALISAR={analysis_mode}\n"
         return subprocess.run(
             ["/bin/zsh", "-f", "-c", setup + body],
             env=environment, text=True, capture_output=True, timeout=45,
@@ -133,7 +150,7 @@ cmd_vigiar
     def make_personal(self):
         personal = self.fixture / "personal"
         personal.mkdir()
-        file = personal / "keep.txt"
+        file = personal / "keep.cache"
         file.write_text("fixture, not cache")
         return file
 

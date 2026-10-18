@@ -17,6 +17,14 @@ A revisão independente acrescentou a recusa de movimentação quando `lsof` fal
 
 O build usa pasta temporária fora do FileProvider. Antes de assinar o artefato gerado, remove apenas `FinderInfo`/`ResourceFork`, proibidos pela assinatura segundo a [Apple QA1940](https://developer.apple.com/library/archive/qa/qa1940/_index.html). Um teste confirma que a quarentena e outros atributos permanecem intactos.
 
+## Proteções da versão 2.0
+
+- Somente analisar por padrão, aplicado no backend antes de limpar, mandar à Lixeira, mover, esvaziar ou alterar tarefas. O vigia apenas avisa nesse modo, mesmo que flags antigas de limpeza estejam ligadas.
+- Limpeza somente pela Lixeira. Esvaziá-la requer modo de edição e confirmação explícita separada; afeta também arquivos enviados por outros apps.
+- Lista adicional de pastas/tipos pessoais protegidos, verificada no alvo, ancestrais e descendentes antes de agir. A recusa pode ser conservadora; não garante reconhecer dados pessoais de qualquer extensão.
+- Candidatos sem pré-seleção, caminhos na interface, acesso ao Finder e confirmação com itens/caminhos/tamanhos. Logs locais registram intenção e resultado; não há log remoto.
+- Hardened Runtime no build e script de assinatura Developer ID/notarização preparado. Não foi executada submissão Apple: nenhum certificado válido foi encontrado no ambiente de desenvolvimento.
+
 ## Verificação
 
 `python3 -m unittest discover -s tests -v` executa os cenários de regressão com fixtures temporárias dedicadas. Os testes positivos de movimentação substituem a fronteira `lsof` por um resultado controlado; há testes separados para arquivo ocupado e falhas/advertências da ferramenta. Cópia, conteúdo, links e atributos são exercitados de fato no macOS.
@@ -33,7 +41,7 @@ As regressões principais falharam primeiro na revisão original. A suíte inclu
 - O backup da movimentação permanece ocupando espaço. Não o remova sem revisar a cópia. Arquivos especiais são recusados.
 - O espaço livre do APFS pode mudar por outras atividades, snapshots e operações assíncronas. `liberado_kb` representa uma diferença observada no volume; não atribui cada byte exclusivamente ao programa.
 - Caches considerados regeneráveis podem exigir rede para recriação e programas podem perder desempenho temporariamente. Preserve relatórios de falhas enquanto investiga um problema.
-- A configuração em `~/.config/disco-livre/config` é código zsh carregado por `source`. Não substitua esse arquivo por conteúdo não confiável.
+- A configuração usa parser de chaves/valores permitidos, sem `source`/`eval`. Conteúdo desconhecido, valor inválido ou link ativa o bloqueio de alterações. O usuário ou outro processo com as mesmas permissões pode editar configurações; o modo não é uma fronteira contra um invasor já executando na conta.
 - A validação de caminhos não cria isolamento contra outro processo malicioso com as mesmas permissões do usuário. Este programa não é uma fronteira de privilégio nem uma ferramenta para apagar árvores controladas por adversários.
 
 Nenhum aplicativo ou serviço foi instalado no Mac do usuário para validar estas correções. Os testes não usam dados pessoais nem esvaziam a Lixeira real.

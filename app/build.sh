@@ -61,7 +61,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
 EOF
 
 limpar_metadados_build "$APP"
-codesign --force --sign - "$APP"
+codesign --force --options runtime --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 rm -rf "$TMP"
 mkdir -p build
