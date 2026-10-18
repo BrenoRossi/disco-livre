@@ -15,6 +15,8 @@ Este fork parte da versão 1.3.2, commit `3579ed9ae61edd29b94c601d7ffd662510575c
 
 A revisão independente acrescentou a recusa de movimentação quando `lsof` falha ou mostra advertências. A instalação a partir de um arquivo Git do SHA revisado também impede incluir arquivos extras locais, inclusive ignorados pelo Git, nas skills e no aplicativo.
 
+O build usa pasta temporária fora do FileProvider. Antes de assinar o artefato gerado, remove apenas `FinderInfo`/`ResourceFork`, proibidos pela assinatura segundo a [Apple QA1940](https://developer.apple.com/library/archive/qa/qa1940/_index.html). Um teste confirma que a quarentena e outros atributos permanecem intactos.
+
 ## Verificação
 
 `python3 -m unittest discover -s tests -v` executa os cenários de regressão com fixtures temporárias dedicadas. Os testes positivos de movimentação substituem a fronteira `lsof` por um resultado controlado; há testes separados para arquivo ocupado e falhas/advertências da ferramenta. Cópia, conteúdo, links e atributos são exercitados de fato no macOS.

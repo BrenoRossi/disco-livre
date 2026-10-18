@@ -15,6 +15,7 @@
 - Conteúdo e metadados são comparados antes e depois da troca; falhas restauram a origem.
 - Erros de limpeza são propagados para CLI/JSON/interface; espaço liberado deixa de usar estimativas do cache.
 - Controles visíveis e separados para limpeza automática e limpeza de relatórios de falhas.
+- Build fora de pastas sincronizadas, com limpeza seletiva dos metadados proibidos pela assinatura e preservação da quarentena.
 
 ### Compatibilidade e migração
 

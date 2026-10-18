@@ -127,11 +127,13 @@ fi
 APP_OK= DEST=
 if [[ -z $SEM_APP ]]; then
   if command -v swiftc >/dev/null 2>&1 && app/build.sh; then
+    app_compilado=$(cat app/build/app-path)
+    [[ -d $app_compilado && ! -L $app_compilado ]] || { print "Build sem aplicativo válido." >&2; exit 1; }
     DEST=/Applications
     [[ -w $DEST ]] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
     [[ ! -L "$DEST/Disco Livre.app" ]] || { print "Destino é um link; instalação recusada." >&2; exit 1; }
     staging=$(mktemp -d "$DEST/.disco-livre.XXXXXX")
-    ditto "app/build/Disco Livre.app" "$staging/Disco Livre.app"
+    ditto "$app_compilado" "$staging/Disco Livre.app"
     codesign --verify --deep --strict "$staging/Disco Livre.app"
     backup="$DEST/Disco Livre.app.backup-$(date +%Y%m%d%H%M%S)"
     [[ ! -e $backup && ! -L $backup ]] || { print "Backup já existe: $backup" >&2; exit 1; }

@@ -86,6 +86,8 @@ swiftc -typecheck -swift-version 5 -parse-as-library app/DiscoLivre.swift
 ./app/build.sh
 ```
 
+O build gera e assina o bundle em uma pasta temporária local, fora do FileProvider. O caminho é mostrado no Terminal e salvo em `app/build/app-path`; o aplicativo não é aberto ou instalado por esse comando.
+
 Os testes usam pastas temporárias dedicadas em HOME, fora de Documentos/FileProvider, sem reatribuir HOME. Nenhum instalador real, serviço, Finder ou dado pessoal é usado. Para provar as regressões na versão original, `DISCO_LIVRE_TEST_SOURCE` pode apontar para o CLI imutável da auditoria.
 
 ```sh

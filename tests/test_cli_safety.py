@@ -500,6 +500,45 @@ cmd_atualizar
         self.assertNotIn("untracked-payload.sh", result.stdout)
         self.assertNotIn("ignored-payload.sh", result.stdout)
 
+    def test_build_metadata_cleanup_preserves_quarantine_and_other_attributes(self):
+        # Load only this pure filesystem helper, never the build script's main
+        # body (which compiles, signs, and removes the real build directory).
+        source = Path(os.environ.get("DISCO_LIVRE_TEST_BUILD_SOURCE", ROOT / "app" / "build.sh")).read_text()
+        helper = re.search(r"(?ms)^limpar_metadados_build\(\)\s*\{.*?^\}", source)
+        self.assertIsNotNone(helper, "build has no selective bundle metadata cleanup helper")
+        bundle = self.fixture / "Generated.app"
+        executable = bundle / "Contents" / "MacOS" / "fixture"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"generated fixture executable")
+        for entry in [bundle, executable]:
+            for attribute, value in [
+                ("com.apple.quarantine", "0081;00000000;DiscoLivreRegression;"),
+                ("com.discolivre.regression", "preserve custom metadata"),
+            ]:
+                subprocess.run(["/usr/bin/xattr", "-w", attribute, value, str(entry)],
+                               check=True, capture_output=True)
+            subprocess.run(["/usr/bin/xattr", "-wx", "com.apple.FinderInfo",
+                            "54455854" + "00" * 28, str(entry)], check=True, capture_output=True)
+        subprocess.run(["/usr/bin/xattr", "-w", "com.apple.ResourceFork", "fixture resource",
+                        str(executable)], check=True, capture_output=True)
+
+        helper_file = self.fixture / "build-helper.zsh"
+        helper_file.write_text(helper.group(0) + '\nlimpar_metadados_build "$1"\n')
+        result = subprocess.run(["/bin/zsh", "-f", str(helper_file), str(bundle)],
+                                text=True, capture_output=True, timeout=15)
+        self.assert_shell_ok(result)
+        for entry in [bundle, executable]:
+            attributes = subprocess.check_output(["/usr/bin/xattr", str(entry)], text=True).splitlines()
+            self.assertNotIn("com.apple.FinderInfo", attributes)
+            self.assertNotIn("com.apple.ResourceFork", attributes)
+            quarantine = subprocess.check_output(["/usr/bin/xattr", "-p", "com.apple.quarantine",
+                                                  str(entry)], text=True).strip()
+            custom = subprocess.check_output(["/usr/bin/xattr", "-p", "com.discolivre.regression",
+                                              str(entry)], text=True).strip()
+            self.assertEqual(quarantine, "0081;00000000;DiscoLivreRegression;")
+            self.assertEqual(custom, "preserve custom metadata")
+        self.assertEqual(executable.read_bytes(), b"generated fixture executable")
+
 
 if __name__ == "__main__":
     unittest.main()
