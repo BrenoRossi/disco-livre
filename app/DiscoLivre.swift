@@ -1243,14 +1243,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // passar o mouse no ícone abre; sair de perto fecha
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved], handler: { [weak self] _ in
-            Task { @MainActor in self?.mouseMexeu() }
+            Task { @MainActor [weak self] in self?.mouseMexeu() }
         }) { monitores.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { [weak self] ev in
-            Task { @MainActor in self?.mouseMexeu() }
+            Task { @MainActor [weak self] in self?.mouseMexeu() }
             return ev
         }) { monitores.append(m) }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
-            Task { @MainActor in self?.fechar() }
+            Task { @MainActor [weak self] in self?.fechar() }
         }) { monitores.append(m) }
 
         Task {
@@ -1265,12 +1265,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if CommandLine.arguments.contains("--mostrar") { abrir(fixo: true) }
         Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.estado.atualizar() }
+            Task { @MainActor [weak self] in await self?.estado.atualizar() }
         }
         // versão nova: confere ao abrir e a cada 6 h
         Task { await estado.checarAtualizacao() }
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.estado.checarAtualizacao() }
+            Task { @MainActor [weak self] in await self?.estado.checarAtualizacao() }
         }
     }
 
@@ -1301,7 +1301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if noIcone {
                 if timerAbrir == nil {
                     timerAbrir = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
-                        Task { @MainActor in
+                        Task { @MainActor [weak self] in
                             guard let self else { return }
                             self.timerAbrir = nil
                             if self.areaDoIcone.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) {
@@ -1321,7 +1321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             timerFechar?.invalidate(); timerFechar = nil
         } else if timerFechar == nil {
             timerFechar = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.timerFechar = nil
                     let q = NSEvent.mouseLocation
