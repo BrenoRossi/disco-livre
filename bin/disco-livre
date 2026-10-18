@@ -6,7 +6,7 @@ emulate -R zsh
 setopt NULL_GLOB
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-VERSAO="1.3.2"
+VERSAO="1.4.0"
 SCRIPT="${0:A}"
 DIR_CONF="${DISCO_LIVRE_DIR:-$HOME/.config/disco-livre}"
 CONF="$DIR_CONF/config"
@@ -19,12 +19,16 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 # Padrões — mude com `disco-livre config`
 META_GB=30            # espaço livre mínimo que você quer manter
 AUTO_LIMPEZA=nao      # limpar o lixo seguro sozinho quando ficar abaixo da meta
-LIMPAR_CRASH=sim      # apagar sozinho surtos de relatórios de crash
+LIMPAR_CRASH=nao      # exclusão de relatórios exige opção explícita
 INTERVALO_HORAS=3     # de quanto em quanto tempo a vigilância roda
 LOG_DIAS=7            # logs mais velhos que isso são lixo
 ALERTA_QUEDA_GB=10    # avisa se o espaço livre cair isso em 24h
 LIMITE_CRASH=500      # quantos relatórios de crash contam como surto
 [[ -f $CONF ]] && source "$CONF"
+# Configurações antigas habilitavam crashes implicitamente. Requer novo opt-in.
+if [[ ${SEGURANCA_VERSAO:-0} != 2 ]]; then
+  AUTO_LIMPEZA=nao LIMPAR_CRASH=nao
+fi
 
 if [[ -t 1 ]]; then
   B=$'\e[1m' D=$'\e[2m' R=$'\e[31m' G=$'\e[32m' Y=$'\e[33m' C=$'\e[36m' N=$'\e[0m'
@@ -65,6 +69,27 @@ log()      { mkdir -p "${LOG:h}"; print -r -- "$(date '+%F %T') $*" >> "$LOG"; }
 avisar()   { osascript -e "display notification \"${2//\"/\'}\" with title \"${1//\"/\'}\"" >/dev/null 2>&1; }
 confirmar() { local r; read -r "r?$1 [s/N] " || return 1; [[ $r == [sSyY]* ]]; }
 ativo()    { launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; }
+
+# Todos os comandos com efeitos colaterais consultam esta barreira antes de agir.
+simular() {
+  [[ ${DISCO_LIVRE_SIMULAR:-0} == 1 ]] || return 1
+  mkdir -p "$DIR_CONF"
+  print -r -- "[simulado] $*" >> "$DIR_CONF/simulado.log"
+  return 0
+}
+
+# O catálogo atual autoriza o alvo; o cache de análise nunca é autorização.
+validar_alvo() {
+  local nivel tipo desc cam cond nota
+  [[ -d $2 && ! -L $2 && $2 == ${2:A} && ${2:A} == ${HOME:A}/* ]] || return 1
+  while IFS='|' read -r nivel tipo desc cam cond nota; do
+    if [[ $tipo == $1 && $cam == $2 ]]; then
+      ALVO_COND=$cond ALVO_DESC=$desc ALVO_NIVEL=$nivel
+      return 0
+    fi
+  done < <(alvos)
+  return 1
+}
 
 
 # Só avisa de novo depois de N segundos (evita spam de notificação)
@@ -224,27 +249,33 @@ mandar_lixeira() {
   if [[ -x /usr/bin/trash ]]; then
     /usr/bin/trash "$@" 2>/dev/null
   else
-    local f
+    local f falha=0
     for f; do
-      osascript -e 'on run a' -e 'tell application "Finder" to delete (POSIX file (item 1 of a) as alias)' -e 'end run' "$f" >/dev/null 2>&1
+      osascript -e 'on run a' -e 'tell application "Finder" to delete (POSIX file (item 1 of a) as alias)' -e 'end run' "$f" >/dev/null 2>&1 || falha=1
     done
+    return $falha
   fi
-  return 0
 }
 
 apagar_alvo() {
   local d
-  # modo de teste: faz tudo, menos apagar
-  [[ -n $DISCO_LIVRE_SIMULAR ]] && { print -r -- "[simulado] $1 $2" >> "$DIR_CONF/simulado.log"; return 0; }
+  simular apagar "$@" && return 0
+  validar_alvo "$1" "$2" || { print -r -- "Alvo recusado: $2" >&2; return 1; }
   case $1 in
     conteudo) find "$2" -mindepth 1 -delete 2>/dev/null ;;
-    antigos)  find "$2" -type f -mtime +$LOG_DIAS -delete 2>/dev/null
+    antigos)  find "$2" -type f -mtime +$LOG_DIAS -delete 2>/dev/null || return 1
               find "$2" -mindepth 1 -type d -empty -delete 2>/dev/null ;;
-    electron) for d in ${(f)"$(electron_dirs "$2")"}; do find "$d" -mindepth 1 -delete 2>/dev/null; done ;;
+    electron) for d in ${(f)"$(electron_dirs "$2")"}; do
+                [[ ! -L $d && $d == ${d:A} ]] || return 1
+                find "$d" -mindepth 1 -delete 2>/dev/null || return 1
+              done ;;
     lixeira-pasta) mandar_lixeira "$2" ;;
-    lixeira-antigos:*) mandar_lixeira ${(0)"$(arquivos_antigos "$1" "$2")"} ;;
+    lixeira-antigos:*)
+      local arquivos
+      arquivos=$(arquivos_antigos "$1" "$2") || return 1
+      mandar_lixeira ${(0)arquivos} ;;
+    *) return 1 ;;
   esac
-  return 0
 }
 
 vai_pra_lixeira() { [[ $1 == lixeira-* ]]; }
@@ -308,12 +339,13 @@ cmd_status() {
 }
 
 cmd_limpar() {
-  local executar=0 sim=0 silencioso=0 a
+  local executar=0 sim=0 silencioso=0 automatico=0 a
   for a; do
     case $a in
       --executar)   executar=1 ;;
       --sim|-y)     sim=1 ;;
       --silencioso) silencioso=1 ;;
+      --automatico) automatico=1 ;;
       *) erro "opção desconhecida: $a" ;;
     esac
   done
@@ -321,11 +353,12 @@ cmd_limpar() {
   local -a fila
   local total=0 tipo desc cam bloq t
   while IFS='|' read -r t desc bloq tipo cam; do
+    (( automatico )) && [[ $LIMPAR_CRASH != sim && $cam == */Crashpad/* ]] && continue
     if (( bloq )); then
       (( silencioso )) || printf "  %s%-9s%s %s %s(feche o app pra limpar)%s\n" "$D" "$(humano $t)" "$N" "$desc" "$Y" "$N"
       continue
     fi
-    fila+=("$tipo|$cam|$desc|$t")
+    fila+=("$(id_de "$tipo" "$cam")|seguro|$t||$desc||$tipo|$cam")
     (( total += t ))
     (( silencioso )) || printf "  %s%-9s%s %s\n" "$B" "$(humano $t)" "$N" "$desc"
   done < <(listar_lixo)
@@ -346,14 +379,14 @@ cmd_limpar() {
     return 0
   fi
 
-  local antes=$(livre_kb) item
-  for item in $fila; do
-    IFS='|' read -r tipo cam desc t <<< "$item"
-    apagar_alvo $tipo "$cam"
-    log "limpou: $desc ($(humano $t))"
-  done
-  LIBERADO_KB=$total
-  (( silencioso )) || print -r -- "  ${G}✓ Limpo.${N} Livre agora: $(humano $(livre_kb)) (antes $(humano $antes))"
+  local antes=$(livre_kb) rc=0
+  limpar_linhas "${fila[@]}" || rc=1
+  if (( ! silencioso )); then
+    if (( rc )); then print -r -- "  Falha: nem todos os itens foram limpos. Veja o histórico." >&2
+    elif [[ ${DISCO_LIVRE_SIMULAR:-0} == 1 ]]; then print -r -- "  Simulação: nada foi excluído."
+    else print -r -- "  ${G}✓${N} Limpeza concluída. Aumento medido do espaço livre: $(humano $LIBERADO_KB)."; fi
+  fi
+  return $rc
 }
 
 # ─── coleta (saída em linhas campo|campo, usada pelo terminal e pelo app) ──
@@ -562,6 +595,7 @@ registrar() {
 }
 
 cmd_vigiar() {
+  simular vigiar && return 0
   registrar
   local livre=$(livre_kb) meta=$(( $(gb_kb $META_GB) )) c n tam s
 
@@ -570,10 +604,19 @@ cmd_vigiar() {
     n=$(find "$c" -type f 2>/dev/null | wc -l | tr -d ' ')
     (( n > LIMITE_CRASH )) || continue
     tam=$(kb "$c")
-    if [[ $LIMPAR_CRASH == sim ]]; then
-      for s in pending completed new; do [[ -d $c/$s ]] && find "$c/$s" -mindepth 1 -delete 2>/dev/null; done
-      log "surto de crash: ${c:h:t} — apagou $n relatórios ($(humano $tam))"
-      avisar "${c:h:t} está crashando sem parar" "Apaguei $n relatórios de crash ($(humano $tam)). Vale reiniciar ou atualizar o app."
+    if [[ $AUTO_LIMPEZA == sim && $LIMPAR_CRASH == sim ]]; then
+      local falha=0
+      for s in pending completed new; do
+        [[ -d $c/$s ]] || continue
+        apagar_alvo conteudo "$c/$s" || falha=1
+      done
+      if (( falha )); then
+        log "falha ao limpar relatórios: ${c:h:t}"
+        avisar "Falha na limpeza" "Não consegui limpar todos os relatórios de ${c:h:t}."
+      else
+        log "limpeza de relatórios concluída: ${c:h:t}"
+        avisar "Relatórios antigos acumulados" "Limpeza concluída em ${c:h:t}. Vale investigar as falhas do app."
+      fi
     else
       log "surto de crash: ${c:h:t} — $n relatórios ($(humano $tam))"
       avisar "${c:h:t} está crashando sem parar" "$n relatórios de crash ($(humano $tam)). Rode: disco-livre limpar"
@@ -599,7 +642,7 @@ cmd_vigiar() {
   # 4) meta de espaço livre
   if (( livre < meta )); then
     if [[ $AUTO_LIMPEZA == sim ]]; then
-      cmd_limpar --executar --sim --silencioso
+      cmd_limpar --executar --sim --silencioso --automatico
       livre=$(livre_kb)
       (( LIBERADO_KB > 0 )) && avisar "Limpeza automática" "Liberei $(humano $LIBERADO_KB). Agora: $(humano $livre) livres."
     fi
@@ -614,6 +657,7 @@ salvar_config() {
   mkdir -p "$DIR_CONF"
   cat > "$CONF" <<EOF
 # disco-livre — configuração (edite à vontade ou use: disco-livre config)
+SEGURANCA_VERSAO=2
 META_GB=$META_GB
 AUTO_LIMPEZA=$AUTO_LIMPEZA
 LIMPAR_CRASH=$LIMPAR_CRASH
@@ -637,6 +681,7 @@ cmd_config() {
     print -r -- "  ${D}Ex.: disco-livre config meta 30${N}"
     return 0
   fi
+  simular config "$@" && return 0
   local chave=$1 valor=$2
   case $chave in
     meta)         [[ $valor == <1-> ]] || erro "use: disco-livre config meta 30"; META_GB=$valor ;;
@@ -654,6 +699,7 @@ cmd_config() {
 }
 
 cmd_ativar() {
+  simular ativar && return 0
   [[ -f $CONF ]] || salvar_config
   mkdir -p "${PLIST:h}"
   cat > "$PLIST" <<EOF
@@ -676,6 +722,7 @@ EOF
 }
 
 cmd_desativar() {
+  simular desativar && return 0
   launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
   rm -f "$PLIST"
   print -r -- "${G}✓${N} Vigilância desligada."
@@ -690,6 +737,7 @@ plist_da_tarefa() {
 }
 
 cmd_pausar_tarefa() {
+  simular pausar-tarefa "$@" && return 0
   [[ -n $1 ]] || erro "use: disco-livre pausar-tarefa <nome-da-tarefa>"
   plist_da_tarefa "$1" >/dev/null || erro "não achei a tarefa $1 em ~/Library/LaunchAgents"
   launchctl bootout "gui/$UID/$1" 2>/dev/null
@@ -699,6 +747,7 @@ cmd_pausar_tarefa() {
 }
 
 cmd_religar_tarefa() {
+  simular religar-tarefa "$@" && return 0
   [[ -n $1 ]] || erro "use: disco-livre religar-tarefa <nome-da-tarefa>"
   local f
   f=$(plist_da_tarefa "$1") || erro "não achei a tarefa $1 em ~/Library/LaunchAgents"
@@ -711,7 +760,50 @@ cmd_religar_tarefa() {
 contar() { find "$1" -type f ! -name .DS_Store ! -name '._*' 2>/dev/null | wc -l | tr -d ' '; }
 bytes()  { find "$1" -type f ! -name .DS_Store ! -name '._*' -print0 2>/dev/null | xargs -0 stat -f%z 2>/dev/null | awk '{s+=$1} END{printf "%d\n", s}'; }
 
+# Confere cada entrada, inclusive links, diretórios vazios, conteúdo e metadados.
+# Qualquer diferença mantém a origem intacta; não basta somar bytes.
+verificar_copia() {
+  setopt localoptions pipefail
+  local lista=$(mktemp) outra=$(mktemp) p q rel atributo nomes1 nomes2 rc=0 n1=0 n2=0 falha_path
+  if ! find "$1" -print0 > "$lista" || ! find "$2" -print0 > "$outra"; then
+    rm -f "$lista" "$outra"; return 1
+  fi
+  while IFS= read -r -d '' p; do
+    (( n1++ )); rel=${p#$1}; q="$2$rel"
+    if [[ -L $p ]]; then
+      [[ -L $q && $(readlink "$p") == $(readlink "$q") ]] || { rc=1; break; }
+    elif [[ -f $p ]]; then
+      [[ -f $q && ! -L $q ]] && cmp -s "$p" "$q" || { rc=1; break; }
+    elif [[ -d $p ]]; then
+      [[ -d $q && ! -L $q ]] || { rc=1; break; }
+    else
+      rc=1; break  # sockets, dispositivos e FIFOs não são movidos
+    fi
+    [[ $(stat -f '%p:%u:%g' "$p") == $(stat -f '%p:%u:%g' "$q") ]] || { rc=1; break; }
+    nomes1=$(xattr -s "$p") || { rc=1; break; }
+    nomes2=$(xattr -s "$q") || { rc=1; break; }
+    [[ "$(print -r -- "$nomes1" | sort)" == "$(print -r -- "$nomes2" | sort)" ]] || { rc=1; break; }
+    for atributo in ${(f)nomes1}; do
+      local valor1 valor2
+      valor1=$(xattr -spx "$atributo" "$p") || { rc=1; break; }
+      valor2=$(xattr -spx "$atributo" "$q") || { rc=1; break; }
+      [[ $valor1 == $valor2 ]] || { rc=1; break; }
+    done
+    (( rc )) && break
+    [[ $(ls -lde "$p" | sed '1d') == $(ls -lde "$q" | sed '1d') ]] || { rc=1; break; }
+  done < "$lista"
+  falha_path=$p
+  while IFS= read -r -d '' p; do (( n2++ )); done < "$outra"
+  rm -f "$lista" "$outra"
+  if (( rc != 0 || n1 != n2 )); then
+    print -r -- "Diferença na cópia: $falha_path (entradas: $n1/$n2)" >&2
+    return 1
+  fi
+  return 0
+}
+
 cmd_mover() {
+  simular mover "$@" && return 0
   (( $# == 2 )) || erro "use: disco-livre mover <pasta> <pasta-de-destino-no-HD-externo>"
   local entrada=${1%/}
   [[ -L $entrada ]] && erro "$entrada já é um atalho — já foi movida"
@@ -723,7 +815,12 @@ cmd_mover() {
 
   local nome=${orig:t}
   local final="$dest/${nome#.}"
-  [[ -e $final ]] && erro "já existe $final"
+  [[ -e $final || -L $final ]] && erro "já existe $final"
+  local backup="$orig.disco-livre-backup-$(date +%Y%m%d%H%M%S)-$$"
+  [[ -e $backup || -L $backup ]] && erro "já existe $backup"
+  local abertos
+  abertos=$(lsof +D "$orig" 2>/dev/null)
+  [[ -z $abertos ]] || erro "a pasta está em uso; feche os aplicativos antes de mover"
 
   local tam=$(kb "$orig") livre_dest
   livre_dest=$(df -k "$dest" | awk 'NR==2{print $4}')
@@ -735,23 +832,22 @@ cmd_mover() {
   print -r -- "  No lugar fica um atalho — os apps continuam achando os arquivos."
   print -r -- "  ${Y}Feche os apps que usam essa pasta antes de continuar.${N}"
   print -r -- "  ${Y}Depois, deixe o HD conectado quando for usar esses arquivos.${N}"
+  print -r -- "  A origem será mantida em: $backup"
+  print -r -- "  O espaço só será liberado depois de você revisar e remover esse backup manualmente."
   confirmar "Continuar?" || { print -r -- "Cancelado."; return 0; }
 
   print -r -- "Copiando…"
   mkdir -p "$final" || erro "não consegui criar $final"
-  rsync -rt "$orig/" "$final/" || erro "a cópia falhou — nada foi apagado do Mac"
-
-  local n1 n2 b1 b2
-  n1=$(contar "$orig") n2=$(contar "$final")
-  b1=$(bytes "$orig")  b2=$(bytes "$final")
-  if [[ $n1 != $n2 || $b1 != $b2 ]]; then
-    erro "a cópia não bateu ($n1 vs $n2 arquivos) — nada foi apagado do Mac. Cópia parcial em: $final"
+  ditto --rsrc --extattr --acl "$orig" "$final" || erro "a cópia falhou; origem preservada. Cópia parcial: $final"
+  verificar_copia "$orig" "$final" || erro "a cópia não bateu; origem preservada. Cópia parcial: $final"
+  [[ -z $(lsof +D "$orig" 2>/dev/null) ]] || erro "a pasta entrou em uso; origem preservada"
+  mv "$orig" "$backup" || erro "não consegui preservar a origem"
+  if ! verificar_copia "$backup" "$final" || ! ln -s "$final" "$orig"; then
+    mv "$backup" "$orig" || erro "restaure a origem manualmente a partir de $backup"
+    erro "não concluí a troca; origem restaurada"
   fi
-  print -r -- "  ${G}✓${N} Cópia conferida: $n2 arquivos, $(humano $(( b2 / 1024 )))"
-
-  rm -rf "$orig" && ln -s "$final" "$orig" || erro "copiei, mas não consegui trocar a pasta pelo atalho"
-  log "moveu: $orig → $final ($(humano $tam))"
-  print -r -- "  ${G}✓${N} Pronto. Livre agora: $(humano $(livre_kb))"
+  log "moveu: $orig → $final; origem recuperável: $backup"
+  print -r -- "  ${G}✓${N} Cópia conferida. Backup recuperável: $backup"
 }
 
 # ─── análise geral (primeira vez e sob demanda) ───────────────────────────
@@ -774,21 +870,35 @@ linhas_geral() {
 # Limpa as linhas recebidas (formato de listar_geral). Confere de novo se o app
 # não foi aberto nesse meio-tempo. Define LIBERADO_KB, LIXEIRA_KB, LIMPOS e PULADOS.
 limpar_linhas() {
-  local l id nivel t quem desc nota tipo cam cond
-  LIBERADO_KB=0 LIXEIRA_KB=0 LIMPOS=0 PULADOS=()
+  local l id nivel t quem desc nota tipo cam cond antes=$(livre_kb) depois rc=0
+  LIBERADO_KB=0 LIXEIRA_KB=0 LIMPOS=0 PULADOS=() FALHAS=()
+  simular limpar-linhas "$@" && return 0
   for l in "$@"; do
     IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$l"
     [[ -e $cam ]] || continue
-    cond=$(alvos | awk -F'|' -v c="$cam" -v t="$tipo" '$4==c && $2==t {print $5; exit}')
+    if [[ $id != $(id_de "$tipo" "$cam") ]] || ! validar_alvo "$tipo" "$cam"; then
+      FALHAS+=("$desc|Alvo fora do catálogo atual ou caminho com link")
+      log "recusou alvo: $cam"
+      rc=1; continue
+    fi
+    cond=$ALVO_COND desc=$ALVO_DESC
     quem=$(quem_usa "$tipo" "$cam" "$cond")
     if [[ -n $quem ]]; then PULADOS+=("$desc|$quem"); continue; fi
-    apagar_alvo "$tipo" "$cam"
-    if vai_pra_lixeira "$tipo"; then (( LIXEIRA_KB += t )); else (( LIBERADO_KB += t )); fi
+    t=$(medir "$tipo" "$cam")
+    if ! apagar_alvo "$tipo" "$cam"; then
+      FALHAS+=("$desc|Não foi possível concluir a exclusão")
+      log "falhou limpeza: $desc ($cam)"
+      rc=1; continue
+    fi
+    if vai_pra_lixeira "$tipo"; then (( LIXEIRA_KB += t )); fi
     (( LIMPOS++ ))
-    log "análise geral: $desc ($(humano $t))$(vai_pra_lixeira "$tipo" && print ' → Lixeira')"
+    log "análise geral: $desc concluída$(vai_pra_lixeira "$tipo" && print ' → Lixeira')"
   done
+  depois=$(livre_kb)
+  LIBERADO_KB=$(( depois > antes ? depois - antes : 0 ))
   rm -f "$CACHE_GERAL"
   marcar_primeira
+  return $rc
 }
 
 comemorar() {   # $1 = livre antes (KB)
@@ -912,7 +1022,7 @@ cmd_geral() {
 
   local antes=$(livre_kb)
   print -r -- "  Limpando…"
-  limpar_linhas "${escolhidas[@]}"
+  limpar_linhas "${escolhidas[@]}" || { print -r -- "Falha: nem todos os itens foram limpos. Veja o histórico." >&2; return 1; }
   comemorar $antes
 }
 
@@ -934,7 +1044,8 @@ cmd_limpar_itens() {
     (( ${+quer[${l%%|*}]} )) && escolhidas+=("$l")
   done
   local antes=$(livre_kb)
-  limpar_linhas "${escolhidas[@]}"
+  local rc=0
+  limpar_linhas "${escolhidas[@]}" || rc=1
 
   if (( json )); then
     local p sep=
@@ -942,13 +1053,20 @@ cmd_limpar_itens() {
     for p in $PULADOS; do
       print -rn -- "$sep{\"desc\":$(js "${p%%|*}"),\"quem\":$(js "${p##*|}")}"; sep=,
     done
+    print -rn -- "],\"erros\":["; sep=
+    for p in $FALHAS; do
+      print -rn -- "$sep{\"desc\":$(js "${p%%|*}"),\"erro\":$(js "${p#*|}")}"; sep=,
+    done
     print -r -- "]}"
   else
-    comemorar $antes
+    if (( rc )); then print -r -- "Falha: nem todos os itens foram limpos. Veja o histórico." >&2
+    else comemorar $antes; fi
   fi
+  return $rc
 }
 
 cmd_esvaziar_lixeira() {
+  simular esvaziar-lixeira && return 0
   if [[ $1 != --sim ]]; then
     confirmar "Esvaziar a Lixeira? Isso apaga de vez o que está lá." || { print -r -- "Cancelado."; return 0; }
   fi

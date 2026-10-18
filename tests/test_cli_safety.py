@@ -1,0 +1,374 @@
+"""Filesystem regressions; only dedicated disposable fixture directories mutate.
+
+Run: python3 -m unittest discover -s tests -v
+Requires macOS and /bin/zsh. No installer or main dispatcher is executed. HOME
+is inherited unchanged. Only OS integration (notifications, confirmation,
+free-space queries, version lookup, open handles) and fixture catalogue discovery
+are stubbed. Fixtures use a dedicated temporary directory directly under HOME,
+outside synchronized Documents: FileProvider was observed changing metadata and
+holding files open during copy verification. HOME itself is never reassigned;
+cleanup removes only this test-created directory and its disposable contents.
+DISCO_LIVRE_TEST_SOURCE may select the immutable audited source for RED evidence.
+"""
+import os
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = Path(os.environ.get("DISCO_LIVRE_TEST_SOURCE", ROOT / "bin/disco-livre"))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "macOS filesystem semantics required")
+class CLISafetyTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix=".disco-livre-test-", dir=Path.home())
+        self.addCleanup(self.temporary.cleanup)
+        self.fixture = Path(self.temporary.name)
+        self.config = self.fixture / "config"
+        self.config.mkdir()
+        source = SOURCE.read_text()
+        self.assertIn("case ${1:-status} in", source)
+        source = source.split("case ${1:-status} in")[0]
+        source = source.replace('[[ -f $CONF ]] && source "$CONF"', "# isolated config")
+        self.library = self.fixture / "library.zsh"
+        self.library.write_text(source)
+
+    def shell(self, body):
+        environment = dict(os.environ)
+        environment.pop("DISCO_LIVRE_SIMULAR", None)
+        environment.update(
+            DISCO_LIVRE_DIR=str(self.config),
+            TEST_LIBRARY=str(self.library),
+            TEST_FIXTURE=str(self.fixture),
+        )
+        setup = '''
+source "$TEST_LIBRARY"
+LOG="$TEST_FIXTURE/config/log"
+livre_kb() { print 1000000000; }
+confirmar() { return 0; }
+avisar() { return 0; }
+ultima_versao() { return 0; }
+# Tests of normal copies use the OS-boundary state "no open handles".
+# A separate regression exercises rejection of an occupied directory.
+lsof() { return 1; }
+'''
+        return subprocess.run(
+            ["/bin/zsh", "-f", "-c", setup + body],
+            env=environment, text=True, capture_output=True, timeout=45,
+        )
+
+    def assert_shell_ok(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def make_move(self):
+        origin = self.fixture / "origin"
+        destination = self.fixture / "destination"
+        origin.mkdir()
+        destination.mkdir()
+        (origin / "data.txt").write_text("fixture payload\n")
+        (origin / "link.txt").symlink_to("data.txt")
+        subprocess.run(["/usr/bin/xattr", "-w", "com.discolivre.regression", "metadata",
+                        str(origin / "data.txt")], check=True, capture_output=True)
+        return origin, destination / "origin"
+
+    def move(self):
+        return self.shell('cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"\n')
+
+    def test_move_preserves_relative_symbolic_links(self):
+        _, final = self.make_move()
+        self.assert_shell_ok(self.move())
+        self.assertTrue((final / "link.txt").is_symlink(), "copy lost its internal symlink")
+        self.assertEqual(os.readlink(final / "link.txt"), "data.txt")
+        self.assertEqual((final / "link.txt").read_text(), "fixture payload\n")
+
+    def test_move_preserves_extended_attributes(self):
+        _, final = self.make_move()
+        self.assert_shell_ok(self.move())
+        result = subprocess.run(["/usr/bin/xattr", "-p", "com.discolivre.regression",
+                                 str(final / "data.txt")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "metadata")
+
+    def test_move_keeps_independent_recoverable_original(self):
+        origin, final = self.make_move()
+        self.assert_shell_ok(self.move())
+        # Do not prescribe a backup filename: the original may be renamed, but
+        # a second real directory must survive, independent of the external copy.
+        backups = [p for p in self.fixture.rglob("data.txt")
+                   if p.parent != final and not p.parent.is_symlink()
+                   and p.read_text() == "fixture payload\n"]
+        self.assertTrue(backups, "original was permanently removed after copying")
+
+    def make_crashes(self):
+        pending = self.fixture / "Crashpad" / "pending"
+        pending.mkdir(parents=True)
+        for index in range(501):
+            (pending / f"{index}.dmp").write_text("diagnostic evidence")
+        return pending
+
+    def test_simulated_watcher_never_deletes_even_when_cleanup_enabled(self):
+        pending = self.make_crashes()
+        result = self.shell('''
+DISCO_LIVRE_SIMULAR=1
+AUTO_LIMPEZA=sim
+LIMPAR_CRASH=sim
+crashpads() { print -r -- "$TEST_FIXTURE/Crashpad"; }
+cmd_vigiar
+''')
+        self.assert_shell_ok(result)
+        self.assertEqual(len(list(pending.glob("*.dmp"))), 501)
+        self.assertTrue(all(p.read_text() == "diagnostic evidence" for p in pending.glob("*.dmp")))
+
+    def test_crash_cleanup_is_opt_in_by_default(self):
+        result = self.shell('print -r -- "CRASH_DEFAULT=$LIMPAR_CRASH"\n')
+        self.assert_shell_ok(result)
+        self.assertIn("CRASH_DEFAULT=nao", result.stdout)
+
+    def make_personal(self):
+        personal = self.fixture / "personal"
+        personal.mkdir()
+        file = personal / "keep.txt"
+        file.write_text("fixture, not cache")
+        return file
+
+    def counters(self, result):
+        match = re.search(r"COUNTS=(\d+),(\d+)", result.stdout)
+        self.assertIsNotNone(match, result.stdout + result.stderr)
+        return tuple(map(int, match.groups()))
+
+    def test_cache_outside_current_catalog_cannot_authorize_deletion(self):
+        file = self.make_personal()
+        result = self.shell('''
+alvos() { return 0; }
+id=$(id_de conteudo "$TEST_FIXTURE/personal")
+limpar_linhas "$id|seguro|8192||Test item||conteudo|$TEST_FIXTURE/personal"
+print -r -- "COUNTS=$LIMPOS,$LIBERADO_KB"
+''')
+        self.assertTrue(file.exists(), result.stdout + result.stderr)
+        self.assertEqual(self.counters(result), (0, 0))
+
+    def test_failed_delete_returns_failure_to_caller(self):
+        self.make_personal()
+        result = self.shell('''
+alvos() { print -r -- "seguro|conteudo|Test item|$TEST_FIXTURE/personal|-|"; }
+find() { return 13; }
+apagar_alvo conteudo "$TEST_FIXTURE/personal"
+''')
+        self.assertNotEqual(result.returncode, 0, "deletion failure was swallowed")
+
+    def test_failed_delete_does_not_count_items_or_space(self):
+        file = self.make_personal()
+        result = self.shell('''
+alvos() { print -r -- "seguro|conteudo|Test item|$TEST_FIXTURE/personal|-|"; }
+id=$(id_de conteudo "$TEST_FIXTURE/personal")
+find() { return 13; }
+limpar_linhas "$id|seguro|8192||Test item||conteudo|$TEST_FIXTURE/personal"
+print -r -- "COUNTS=$LIMPOS,$LIBERADO_KB"
+''')
+        self.assertTrue(file.exists())
+        self.assertEqual(self.counters(result), (0, 0), result.stdout + result.stderr)
+
+    def test_stale_cached_size_is_not_reported_as_real_free_space(self):
+        file = self.make_personal()
+        result = self.shell('''
+alvos() { print -r -- "seguro|conteudo|Test item|$TEST_FIXTURE/personal|-|"; }
+id=$(id_de conteudo "$TEST_FIXTURE/personal")
+limpar_linhas "$id|seguro|999999999||Test item||conteudo|$TEST_FIXTURE/personal"
+print -r -- "COUNTS=$LIMPOS,$LIBERADO_KB"
+''')
+        self.assertFalse(file.exists(), result.stdout + result.stderr)
+        count, released = self.counters(result)
+        self.assertEqual(count, 1)
+        # Free-space boundary is held constant in this test. Cached estimated
+        # bytes must never become the reported physical-space increase.
+        self.assertEqual(released, 0, "cached estimate presented as measured freed space")
+
+    def test_simulated_move_does_not_change_original_or_destination(self):
+        origin, final = self.make_move()
+        result = self.shell('''
+DISCO_LIVRE_SIMULAR=1
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assert_shell_ok(result)
+        self.assertFalse(origin.is_symlink())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+        self.assertFalse(final.exists())
+        self.assertEqual(list(self.fixture.glob("origin*")), [origin])
+
+    def test_simulated_empty_trash_never_calls_finder(self):
+        result = self.shell('''
+osascript() { print called >> "$TEST_FIXTURE/finder-called"; return 0; }
+DISCO_LIVRE_SIMULAR=1
+cmd_esvaziar_lixeira --sim
+''')
+        self.assert_shell_ok(result)
+        self.assertFalse((self.fixture / "finder-called").exists())
+
+    def test_watcher_with_auto_cleanup_off_preserves_crashes(self):
+        pending = self.make_crashes()
+        result = self.shell('''
+AUTO_LIMPEZA=nao
+LIMPAR_CRASH=sim
+crashpads() { print -r -- "$TEST_FIXTURE/Crashpad"; }
+cmd_vigiar
+''')
+        self.assert_shell_ok(result)
+        self.assertEqual(len(list(pending.glob("*.dmp"))), 501)
+
+    def test_symbolic_link_target_in_catalog_is_rejected(self):
+        file = self.make_personal()
+        (self.fixture / "alias").symlink_to("personal", target_is_directory=True)
+        result = self.shell('''
+alvos() { print -r -- "seguro|conteudo|Test item|$TEST_FIXTURE/alias|-|"; }
+id=$(id_de conteudo "$TEST_FIXTURE/alias")
+limpar_linhas "$id|seguro|8192||Test item||conteudo|$TEST_FIXTURE/alias"
+print -r -- "COUNTS=$LIMPOS,$LIBERADO_KB"
+''')
+        self.assertTrue(file.exists(), result.stdout + result.stderr)
+        self.assertEqual(self.counters(result), (0, 0))
+
+    def test_symbolic_link_ancestor_in_catalog_is_rejected(self):
+        file = self.make_personal()
+        (self.fixture / "alias").symlink_to(".", target_is_directory=True)
+        result = self.shell('''
+alvos() { print -r -- "seguro|conteudo|Test item|$TEST_FIXTURE/alias/personal|-|"; }
+id=$(id_de conteudo "$TEST_FIXTURE/alias/personal")
+limpar_linhas "$id|seguro|8192||Test item||conteudo|$TEST_FIXTURE/alias/personal"
+print -r -- "COUNTS=$LIMPOS,$LIBERADO_KB"
+''')
+        self.assertTrue(file.exists(), result.stdout + result.stderr)
+        self.assertEqual(self.counters(result), (0, 0))
+
+    def test_forged_id_cannot_authorize_catalog_target(self):
+        file = self.make_personal()
+        result = self.shell('''
+alvos() { print -r -- "seguro|conteudo|Test item|$TEST_FIXTURE/personal|-|"; }
+limpar_linhas "forged-id|seguro|8192||Test item||conteudo|$TEST_FIXTURE/personal"
+print -r -- "COUNTS=$LIMPOS,$LIBERADO_KB"
+''')
+        self.assertTrue(file.exists(), result.stdout + result.stderr)
+        self.assertEqual(self.counters(result), (0, 0))
+
+    def test_forged_type_cannot_change_catalog_deletion_scope(self):
+        file = self.make_personal()
+        result = self.shell('''
+alvos() { print -r -- "seguro|antigos|Test item|$TEST_FIXTURE/personal|-|"; }
+id=$(id_de conteudo "$TEST_FIXTURE/personal")
+limpar_linhas "$id|seguro|8192||Test item||conteudo|$TEST_FIXTURE/personal"
+print -r -- "COUNTS=$LIMPOS,$LIBERADO_KB"
+''')
+        self.assertTrue(file.exists(), result.stdout + result.stderr)
+        self.assertEqual(self.counters(result), (0, 0))
+
+    def test_trash_failure_is_propagated(self):
+        file = self.make_personal()
+        result = self.shell('''
+# Both supported OS boundaries fail without touching the actual user's Trash.
+function /usr/bin/trash { return 13; }
+osascript() { return 13; }
+mandar_lixeira "$TEST_FIXTURE/personal"
+''')
+        self.assertNotEqual(result.returncode, 0, "trash command swallowed failure")
+        self.assertTrue(file.exists())
+
+    def test_incomplete_copy_fails_with_original_preserved(self):
+        origin, _ = self.make_move()
+        result = self.shell('''
+# Simulate a copy tool that reports success but copies only one regular file.
+ditto() { /bin/cp "$TEST_FIXTURE/origin/data.txt" "$TEST_FIXTURE/destination/origin/"; }
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(origin.is_symlink())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+        self.assertEqual(os.readlink(origin / "link.txt"), "data.txt")
+
+    def test_move_rejects_corrupted_same_size_copy(self):
+        origin, _ = self.make_move()
+        result = self.shell('''
+ditto() {
+  command ditto "$@" || return
+  print -rn -- 'corrupt payload!' > "$TEST_FIXTURE/destination/origin/data.txt"
+}
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(origin.is_symlink())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+
+    def test_move_refuses_occupied_original(self):
+        origin, final = self.make_move()
+        result = self.shell('''
+lsof() { print -r -- 'fixture-process 123 user 3r REG fixture'; return 0; }
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(origin.is_symlink())
+        self.assertFalse(final.exists())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+
+    def test_metadata_change_during_rename_restores_original_safely(self):
+        origin, _ = self.make_move()
+        result = self.shell('''
+# Model the observed FileProvider race at the OS rename boundary: a new xattr
+# appears on the renamed original after copying, before final verification.
+mv() {
+  command mv "$@" || return
+  if [[ $2 == *disco-livre-backup* ]]; then
+    xattr -w com.discolivre.external-change changed "$2/data.txt" || return
+  fi
+  return 0
+}
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(origin.is_symlink())
+        self.assertTrue(origin.is_dir())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+        attributes = subprocess.run(["/usr/bin/xattr", "-p", "com.discolivre.external-change",
+                                     str(origin / "data.txt")], capture_output=True, text=True)
+        self.assertEqual(attributes.returncode, 0, attributes.stderr)
+        self.assertEqual(attributes.stdout.strip(), "changed")
+
+    def test_move_preserves_metadata_across_ten_fixture_variations(self):
+        for index in range(10):
+            with self.subTest(variation=index):
+                scenario = self.fixture / f"variation-{index}"
+                scenario.mkdir()
+                origin = scenario / "origin"
+                origin.mkdir()
+                destination = scenario / "destination"
+                destination.mkdir()
+                name = ["plain", "sp ace", "acentuação", "line\nbreak", "[glob]*"][index % 5]
+                file = origin / name
+                file.write_bytes(b"payload" * (index + 1))
+                (origin / "relative").symlink_to(name)
+                (origin / "empty directory").mkdir()
+                subprocess.run(["/usr/bin/xattr", "-w", "com.discolivre.regression",
+                                f"variation-{index}", str(file)], check=True, capture_output=True)
+                result = self.shell(f'''
+cmd_mover "$TEST_FIXTURE/variation-{index}/origin" "$TEST_FIXTURE/variation-{index}/destination"
+''')
+                if result.returncode:
+                    evidence = {"variation": index, "stdout": result.stdout,
+                                "stderr": result.stderr, "entries": []}
+                    for entry in scenario.rglob("*"):
+                        xattrs = subprocess.run(["/usr/bin/xattr", "-l", "-s", str(entry)],
+                                                capture_output=True, text=True)
+                        evidence["entries"].append({"path": str(entry.relative_to(scenario)),
+                            "symlink": entry.is_symlink(), "xattrs": xattrs.stdout,
+                            "xattr_errors": xattrs.stderr})
+                    self.fail(json.dumps(evidence, ensure_ascii=False, indent=2))
+                final = destination / "origin"
+                self.assertEqual((final / name).read_bytes(), b"payload" * (index + 1))
+                self.assertEqual(os.readlink(final / "relative"), name)
+
+
+if __name__ == "__main__":
+    unittest.main()
