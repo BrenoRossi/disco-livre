@@ -1,10 +1,14 @@
 #!/bin/zsh
-# Instalação em uma linha, sem git e sem ferramentas da Apple:
-#   zsh -c "$(curl -fsSL https://raw.githubusercontent.com/Willclaf/disco-livre/main/instalar.sh)"
-# Opções do install.sh podem vir depois:  ... instalar.sh)" -- --sim --meta 30
+# Entrada local: não baixa nem executa código da branch main.
 set -e
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-print -r -- "Baixando o Disco Livre…"
-curl -fsSL "https://github.com/Willclaf/disco-livre/archive/refs/heads/main.tar.gz" | tar -xz -C "$tmp"
-"$tmp/disco-livre-main/install.sh" "$@"
+if [[ ${DISCO_LIVRE_SIMULAR:-0} == 1 ]]; then
+  print -r -- "Simulação: instalação não executada."
+  exit 0
+fi
+raiz="${0:A:h}"
+if [[ -f "$raiz/install.sh" && -d "$raiz/.git" ]]; then
+  exec "$raiz/install.sh" "$@"
+fi
+print -r -- "Instalação remota por curl desativada. Clone BrenoRossi/disco-livre," >&2
+print -r -- "revise um commit e execute ./install.sh --revisao <SHA completo>." >&2
+exit 1

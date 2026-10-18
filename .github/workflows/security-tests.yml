@@ -1,0 +1,30 @@
+name: macOS safety checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Checkout reviewed revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check zsh syntax
+        run: |
+          for script in bin/disco-livre install.sh instalar.sh uninstall.sh app/build.sh; do
+            zsh -n "$script"
+          done
+      - name: Run isolated regression tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Typecheck native application
+        run: swiftc -typecheck -swift-version 5 -parse-as-library app/DiscoLivre.swift
+      - name: Build both architectures without installing
+        run: ./app/build.sh
