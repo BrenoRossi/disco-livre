@@ -112,6 +112,7 @@ fi
 [[ $VIGIA == [sSyY]* ]] && VIGIA=sim || VIGIA=nao
 [[ $AUTO == [sSyY]* ]] && AUTO=sim || AUTO=nao
 
+"$BIN/disco-livre" config somente-analisar sim >/dev/null
 "$BIN/disco-livre" config meta "$META" >/dev/null
 "$BIN/disco-livre" config auto-limpeza "$AUTO" >/dev/null
 "$BIN/disco-livre" config limpar-crash nao >/dev/null

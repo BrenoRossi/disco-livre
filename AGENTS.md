@@ -16,6 +16,8 @@ Estas regras descrevem o uso seguro deste fork. Pedidos do usuário têm preced�
 
 Leia o README e revise um commit completo. Use checkout limpo e `./install.sh --revisao <SHA completo>`. Não execute `curl | sh` ou `zsh -c` de código remoto. Não remova quarentena nem contorne o Gatekeeper. Este fork compila do fonte e ainda não oferece distribuição Developer ID/notarizada.
 
+O modo somente analisar começa ligado e bloqueia alterações em dados. Não o desligue sem autorização para a operação. Toda limpeza vai à Lixeira; não tente contornar dados protegidos. Configuração não aceita código zsh.
+
 Os padrões são vigilância, auto-limpeza e limpeza de crashes desligadas. Pergunte as preferências somente quando a instalação for solicitada e essas escolhas ainda não tiverem sido feitas. Não abra o app durante uma auditoria: ele instala seus componentes na primeira execução.
 
 ## Analisar e limpar somente no escopo autorizado

@@ -138,6 +138,7 @@ struct Resumo: Decodable {
     var metaKb: Int64
     var metaGb: Int
     var vigilancia: Bool
+    var somenteAnalisar: Bool?
     var autoLimpeza: Bool
     var limparCrash: Bool?
     var intervalo: Int
@@ -172,6 +173,7 @@ struct Remoto: Decodable, Identifiable {
 struct ItemGeral: Decodable, Identifiable {
     var id: String; var nivel: String; var kb: Int64; var quem: String
     var desc: String; var nota: String; var lixeira: Bool
+    var cam: String?
     var seguro: Bool { nivel == "seguro" }
     var bloqueado: Bool { !quem.isEmpty }
 }
@@ -295,18 +297,8 @@ final class Estado: ObservableObject {
     }
 
     func limpar() async {
-        let antes = resumo?.livre ?? 0
-        limpando = true
-        aviso = nil
-        let resultado = await CLI.executar(["limpar", "--executar", "--sim"])
-        ultimaAtualizacao = .distantPast
-        await atualizar()
-        limpando = false
-        falhou = !resultado.sucesso
-        let ganho = (resumo?.livre ?? 0) - antes
-        aviso = resultado.sucesso
-            ? "Limpeza concluída. Aumento medido: \(tamanho(max(0, ganho)))."
-            : "Falha na limpeza. Veja o histórico; alguns arquivos podem ter permanecido."
+        // Sempre mostre a lista atual e fixe os IDs antes da confirmação.
+        await analisarGeral()
     }
 
     func mudarMeta(_ gb: Int) {
@@ -328,6 +320,37 @@ final class Estado: ObservableObject {
         if falhou { aviso = "Não consegui alterar a vigilância." }
         ultimaAtualizacao = .distantPast
         await atualizar()
+    }
+
+    var somenteAnalisar: Bool { resumo?.somenteAnalisar ?? true }
+
+    func mudarSomenteAnalisar(_ ligar: Bool) async {
+        if !ligar {
+            let alerta = NSAlert()
+            alerta.messageText = "Permitir alterações nos arquivos?"
+            alerta.informativeText = "A limpeza manual poderá enviar itens à Lixeira e a movimentação ficará disponível. A limpeza automática continuará desligada. Revise cada operação."
+            alerta.addButton(withTitle: "Manter somente análise")
+            alerta.addButton(withTitle: "Permitir alterações")
+            guard alerta.runModal() == .alertSecondButtonReturn else { return }
+        }
+        let r = await CLI.executar(["config", "somente-analisar", ligar ? "sim" : "nao"])
+        falhou = !r.sucesso
+        if r.sucesso {
+            resumo?.somenteAnalisar = ligar
+            resumo?.autoLimpeza = false
+            resumo?.limparCrash = false
+            marcados = []
+        } else { aviso = "Não consegui alterar o modo de análise." }
+    }
+
+    func confirmarEnvio(_ detalhes: String) -> Bool {
+        guard !somenteAnalisar else { aviso = "Somente analisar está ligado. Nenhum arquivo foi alterado."; return false }
+        let alerta = NSAlert()
+        alerta.messageText = "Enviar os itens selecionados à Lixeira?"
+        alerta.informativeText = detalhes + "\n\nOs itens permanecem recuperáveis na Lixeira. O espaço só será liberado após esvaziá-la."
+        alerta.addButton(withTitle: "Cancelar")
+        alerta.addButton(withTitle: "Enviar à Lixeira")
+        return alerta.runModal() == .alertSecondButtonReturn
     }
 
     func mudarAutoLimpeza(_ ligar: Bool) async {
@@ -364,7 +387,7 @@ final class Estado: ObservableObject {
         }
         geral = g
         // já vem marcado só o que é seguro e pode ser limpo agora
-        marcados = Set(g.itens.filter { $0.seguro && !$0.bloqueado }.map(\.id))
+        marcados = []
         fase = .lista
     }
 
@@ -379,6 +402,10 @@ final class Estado: ObservableObject {
 
     func limparMarcados() async {
         guard !marcados.isEmpty else { return }
+        let detalhes = (geral?.itens ?? []).filter { marcados.contains($0.id) }.map {
+            "\($0.desc) — \(tamanho($0.kb))\n\($0.cam ?? "Caminho indisponível")\n\($0.nota)"
+        }.joined(separator: "\n\n")
+        guard confirmarEnvio(detalhes) else { return }
         fase = .limpando
         let operacao = await CLI.executar(["limpar-itens"] + Array(marcados) + ["--json"])
         resultado = try? decodificador().decode(ResultadoLimpeza.self, from: Data(operacao.saida.utf8))
@@ -405,8 +432,9 @@ final class Estado: ObservableObject {
     }
 
     func esvaziarLixeira() async {
+        guard !somenteAnalisar else { aviso = "Modo somente analisar: operação bloqueada."; return }
         esvaziandoLixeira = true
-        let operacao = await CLI.executar(["esvaziar-lixeira", "--sim"])
+        let operacao = await CLI.executar(["esvaziar-lixeira", "--sim", "--confirmar-exclusao-permanente"])
         esvaziandoLixeira = false
         lixeiraVazia = operacao.sucesso
         falhou = !operacao.sucesso
@@ -573,7 +601,6 @@ struct Secao<Conteudo: View>: View {
 struct PainelView: View {
     @EnvironmentObject var e: Estado
     @State private var detalhes = false
-    @State private var confirmando = false
     @State private var iniciarComMac = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -678,27 +705,13 @@ struct PainelView: View {
                         Text("nada 👌").foregroundStyle(.secondary)
                     } else {
                         Text(tamanho(total)).monospacedDigit().foregroundStyle(.secondary)
-                        Button(confirmando ? "Confirmar" : "Limpar") {
-                            if confirmando {
-                                confirmando = false
-                                Task { await e.limpar() }
-                            } else {
-                                confirmando = true
-                            }
-                        }
-                        .buttonStyle(Capsula(cor: confirmando ? .orange : .green))
-                        .help("Apaga só cache, logs velhos e relatórios de crash. Tudo se recria sozinho.")
+                        Button("Revisar") { Task { await e.limpar() } }
+                            .buttonStyle(Capsula(cor: .green))
+                            .help("Abre a análise atual sem alterar arquivos.")
                     }
                 }
             }
 
-            if confirmando {
-                HStack {
-                    Text("Apagar \(tamanho(total)) de lixo seguro?").font(.caption)
-                    Spacer()
-                    Button("Cancelar") { confirmando = false }.buttonStyle(.borderless).font(.caption)
-                }
-            }
             if let a = e.aviso {
                 Label(a, systemImage: e.falhou ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(e.falhou ? .orange : .green)
@@ -764,7 +777,7 @@ struct PainelView: View {
                                t.tipo == "reabre" ? .orange : .red, t.label,
                                t.tipo == "reabre" ? "Abre o \(t.info) sozinho e reabre se você fechar."
                                                   : "Tarefa em segundo plano dando erro (código \(t.info)).")
-                        Button("Pausar") { Task { await e.pausar(t.label) } }
+                        Button("Pausar") { Task { await e.pausar(t.label) } }.disabled(e.somenteAnalisar)
                             .controlSize(.mini)
                             .help("Para a tarefa (reversível: disco-livre religar-tarefa \(t.label))")
                     }
@@ -839,12 +852,16 @@ struct PainelView: View {
 
     func ajustes(_ r: Resumo) -> some View {
         Secao(titulo: "Ajustes") {
+            Toggle("Somente analisar (bloquear alterações)",
+                   isOn: Binding(get: { e.somenteAnalisar }, set: { v in Task { await e.mudarSomenteAnalisar(v) } }))
+            Text("Padrão recomendado: apenas mostrar candidatos e avisar. Limpeza, movimentação e esvaziamento ficam bloqueados.")
+                .font(.caption2).foregroundStyle(.secondary)
             Toggle("Limpar sozinho abaixo da meta",
                    isOn: Binding(get: { r.autoLimpeza }, set: { v in Task { await e.mudarAutoLimpeza(v) } }))
-                .disabled(!r.vigilancia)
+                .disabled(!r.vigilancia || e.somenteAnalisar)
             Toggle("Apagar relatórios de falhas automaticamente",
                    isOn: Binding(get: { r.limparCrash ?? false }, set: { v in Task { await e.mudarLimparCrash(v) } }))
-                .disabled(!r.vigilancia || !r.autoLimpeza)
+                .disabled(!r.vigilancia || !r.autoLimpeza || e.somenteAnalisar)
             Text("Relatórios só são apagados automaticamente com as duas opções de limpeza ligadas.")
                 .font(.caption2).foregroundStyle(.secondary)
             Toggle("Abrir ao ligar o Mac", isOn: Binding(get: { iniciarComMac }, set: { v in
@@ -932,7 +949,7 @@ struct AnaliseGeralView: View {
                         .foregroundStyle(LinearGradient(colors: [Color(red: 0.16, green: 0.80, blue: 0.56),
                                                                  Color(red: 0.10, green: 0.55, blue: 0.95)],
                                                         startPoint: .leading, endPoint: .trailing))
-                    Text("que dá pra liberar no seu Mac. Escolha o que limpar:")
+                    Text("em candidatos à revisão. Confira o motivo e o caminho:")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     Text("Seu Mac não tem lixo escondido agora 👌").font(.callout)
@@ -944,7 +961,7 @@ struct AnaliseGeralView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         if !seguros.isEmpty {
-                            grupo("Seguro", "se recria sozinho, não perde nada", seguros)
+                            grupo("Caches e relatórios", "candidatos à revisão; podem ser recriados pelos apps", seguros)
                         }
                         if !revisar.isEmpty {
                             grupo("Revise", "é seu: só sai se você marcar", revisar)
@@ -962,12 +979,15 @@ struct AnaliseGeralView: View {
                     Button {
                         Task { await e.limparMarcados() }
                     } label: {
-                        Text(e.marcados.isEmpty ? "Marque o que quer limpar" : "Liberar \(tamanho(e.totalMarcado))")
+                        Text(e.marcados.isEmpty ? "Marque o que quer limpar" : "Enviar \(tamanho(e.totalMarcado)) à Lixeira")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(Capsula(cor: .green))
-                    .disabled(e.marcados.isEmpty)
-                    .opacity(e.marcados.isEmpty ? 0.5 : 1)
+                    .disabled(e.marcados.isEmpty || e.somenteAnalisar)
+                    .opacity(e.marcados.isEmpty || e.somenteAnalisar ? 0.5 : 1)
+                    if e.somenteAnalisar {
+                        Text("Somente analisar: nenhuma exclusão é permitida.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 HStack {
                     if itens.contains(where: \.bloqueado) {
@@ -1008,6 +1028,10 @@ struct AnaliseGeralView: View {
                     .foregroundStyle(item.bloqueado ? Color.orange : (marcado ? Color.green : Color.secondary))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.desc).font(.system(size: 12.5)).lineLimit(2).multilineTextAlignment(.leading)
+                    if let caminho = item.cam {
+                        Text(caminho).font(.caption2).foregroundStyle(.secondary)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
                     if item.bloqueado {
                         Text("Feche o \(item.quem) pra limpar").font(.caption2).foregroundStyle(.orange)
                     } else if !item.nota.isEmpty {
@@ -1024,6 +1048,11 @@ struct AnaliseGeralView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let caminho = item.cam {
+                Button("Mostrar no Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: caminho)]) }
+            }
+        }
         .opacity(item.bloqueado ? 0.65 : 1)
         .help(item.bloqueado ? "Esse app está aberto. Feche e clique em \"conferir de novo\"." : "")
     }
@@ -1134,7 +1163,7 @@ struct AnaliseGeralView: View {
                         .buttonStyle(Capsula(cor: .red))
                     }
                 } else {
-                    Button("Esvaziar Lixeira") { confirmandoLixeira = true }
+                    Button("Esvaziar Lixeira") { confirmandoLixeira = true }.disabled(e.somenteAnalisar)
                         .buttonStyle(Capsula(cor: .gray))
                 }
             }

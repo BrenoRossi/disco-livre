@@ -1,5 +1,12 @@
 # Alterações
 
+## 2.0.0 — 2026-10-18 (fork; sem release binária)
+
+- Mudança de comportamento: somente analisar ligado por padrão, inclusive em instalações/atualizações; alterações exigem opt-in. Limpezas sempre enviam à Lixeira. Esvaziamento exige confirmação permanente separada.
+- Proteção adicional de documentos, fotos, máquinas virtuais e backups; configuração deixa de executar código zsh.
+- Caminho, motivo, tamanho, acesso ao Finder e confirmação por item; nenhuma seleção automática.
+- Hardened Runtime e fluxo Developer ID/notarização com validação do ticket/Gatekeeper, dependente de certificado e credenciais locais.
+
 ## 1.4.0 — 2026-10-18 (fork; sem release binária)
 
 ### Segurança

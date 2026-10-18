@@ -4,9 +4,10 @@
 
 emulate -R zsh
 setopt NULL_GLOB
+umask 077
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-VERSAO="1.4.0"
+VERSAO="2.0.0"
 SCRIPT="${0:A}"
 DIR_CONF="${DISCO_LIVRE_DIR:-$HOME/.config/disco-livre}"
 CONF="$DIR_CONF/config"
@@ -17,6 +18,7 @@ LABEL="com.disco-livre.vigia"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 # Padrões — mude com `disco-livre config`
+SOMENTE_ANALISAR=sim # bloqueia limpeza, movimentação e exclusão permanente
 META_GB=30            # espaço livre mínimo que você quer manter
 AUTO_LIMPEZA=nao      # limpar o lixo seguro sozinho quando ficar abaixo da meta
 LIMPAR_CRASH=nao      # exclusão de relatórios exige opção explícita
@@ -24,7 +26,25 @@ INTERVALO_HORAS=3     # de quanto em quanto tempo a vigilância roda
 LOG_DIAS=7            # logs mais velhos que isso são lixo
 ALERTA_QUEDA_GB=10    # avisa se o espaço livre cair isso em 24h
 LIMITE_CRASH=500      # quantos relatórios de crash contam como surto
-[[ -f $CONF ]] && source "$CONF"
+# Dados de configuração nunca são executados como comandos.
+CONFIG_INVALIDA=0
+carregar_config() {
+  local chave valor
+  [[ ! -L $CONF ]] || { CONFIG_INVALIDA=1; return; }
+  [[ -f $CONF ]] || return 0
+  while IFS='=' read -r chave valor || [[ -n $chave ]]; do
+    [[ -z $chave || $chave == \#* ]] && continue
+    case $chave in
+      SOMENTE_ANALISAR|AUTO_LIMPEZA|LIMPAR_CRASH)
+        if [[ $valor == (sim|nao) ]]; then typeset -g "$chave=$valor"; else CONFIG_INVALIDA=1; fi ;;
+      META_GB|LOG_DIAS|ALERTA_QUEDA_GB|LIMITE_CRASH|INTERVALO_HORAS|SEGURANCA_VERSAO)
+        if [[ $valor == <1-1000000> ]]; then typeset -g "$chave=$valor"; else CONFIG_INVALIDA=1; fi ;;
+      *) CONFIG_INVALIDA=1 ;;
+    esac
+  done < "$CONF"
+}
+carregar_config
+if (( CONFIG_INVALIDA )); then SOMENTE_ANALISAR=sim; AUTO_LIMPEZA=nao; LIMPAR_CRASH=nao; fi
 # Configurações antigas habilitavam crashes implicitamente. Requer novo opt-in.
 if [[ ${SEGURANCA_VERSAO:-0} != 2 ]]; then
   AUTO_LIMPEZA=nao LIMPAR_CRASH=nao
@@ -75,6 +95,39 @@ simular() {
   [[ ${DISCO_LIVRE_SIMULAR:-0} == 1 ]] || return 1
   mkdir -p "$DIR_CONF"
   print -r -- "[simulado] $*" >> "$DIR_CONF/simulado.log"
+  return 0
+}
+
+# Falha fechada: só o valor explícito nao libera operações nos dados.
+permitir_alteracao() {
+  [[ $SOMENTE_ANALISAR == nao && $CONFIG_INVALIDA == 0 ]] && return 0
+  print -r -- "Modo somente analisar: operação bloqueada. Nada foi alterado." >&2
+  return 1
+}
+
+# Defesa adicional ao catálogo: nunca limpar dados pessoais ou seus ancestrais.
+caminho_protegido() {
+  local p=${1:A} parte
+  [[ $p == ${HOME:A}/(Documents|Desktop|Pictures|Movies|Music|Parallels)(/*|) ]] && return 0
+  for parte in ${(s:/:)p}; do
+    case ${parte:l} in
+      *.pvm|*.hdd|*.vmdk|*.vdi|*.qcow2|*.photoslibrary|*.photolibrary|*.backupdb|*.sparsebundle|*.sparseimage|*.timemachine|*.disco-livre-backup-*|backups|backup|backups.backupdb) return 0 ;;
+      *.doc|*.docx|*.odt|*.pdf|*.xls|*.xlsx|*.xlsm|*.ppt|*.pptx|*.txt|*.csv|*.jpg|*.jpeg|*.png|*.heic|*.raw|*.dng|*.mp4|*.mov) return 0 ;;
+    esac
+  done
+  return 1
+}
+verificar_dados_protegidos() {
+  local alvo=$1 item lista
+  caminho_protegido "$alvo" && return 1
+  if [[ -d $alvo && ! -L $alvo ]]; then
+    lista=$(mktemp) || return 1
+    if ! find "$alvo" -print0 > "$lista" 2>/dev/null; then rm -f "$lista"; return 1; fi
+    while IFS= read -r -d '' item; do
+      if caminho_protegido "$item"; then rm -f "$lista"; return 1; fi
+    done < "$lista"
+    rm -f "$lista"
+  fi
   return 0
 }
 
@@ -246,7 +299,15 @@ quem_usa() {
 # Manda pra Lixeira (recuperável). macOS 15+: /usr/bin/trash; antes disso, pelo Finder.
 mandar_lixeira() {
   simular lixeira "$@" && return 0
+  permitir_alteracao || return 1
   (( $# )) || return 0
+  local alvo
+  # Verifica todo o lote antes de enviar o primeiro arquivo.
+  for alvo; do
+    [[ -e $alvo && ! -L $alvo && $alvo == ${alvo:A} && ${alvo:A} == ${HOME:A}/* ]] || return 1
+    verificar_dados_protegidos "$alvo" || { log "recusou dado protegido: $alvo"; return 1; }
+  done
+  log "envio à Lixeira solicitado: ${(j:; :)@}"
   if [[ -x /usr/bin/trash ]]; then
     /usr/bin/trash "$@" 2>/dev/null
   else
@@ -259,27 +320,36 @@ mandar_lixeira() {
 }
 
 apagar_alvo() {
-  local d
+  local d lista item
   simular apagar "$@" && return 0
+  permitir_alteracao || return 1
   validar_alvo "$1" "$2" || { print -r -- "Alvo recusado: $2" >&2; return 1; }
+  verificar_dados_protegidos "$2" || { log "recusou dado protegido: $2"; return 1; }
+  local -a arquivos
   case $1 in
-    conteudo) find "$2" -mindepth 1 -delete 2>/dev/null ;;
-    antigos)  find "$2" -type f -mtime +$LOG_DIAS -delete 2>/dev/null || return 1
-              find "$2" -mindepth 1 -type d -empty -delete 2>/dev/null ;;
-    electron) for d in ${(f)"$(electron_dirs "$2")"}; do
-                [[ ! -L $d && $d == ${d:A} ]] || return 1
-                find "$d" -mindepth 1 -delete 2>/dev/null || return 1
-              done ;;
-    lixeira-pasta) mandar_lixeira "$2" ;;
+    conteudo) arquivos=("$2"/*(DN)) ;;
+    antigos)
+      lista=$(mktemp) || return 1
+      if ! find "$2" -type f -mtime +$LOG_DIAS -print0 > "$lista" 2>/dev/null; then rm -f "$lista"; return 1; fi
+      while IFS= read -r -d '' item; do arquivos+=("$item"); done < "$lista"
+      rm -f "$lista" ;;
+    electron)
+      for d in ${(f)"$(electron_dirs "$2")"}; do
+        [[ ! -L $d && $d == ${d:A} ]] || return 1
+        arquivos+=("$d"/*(DN))
+      done ;;
+    lixeira-pasta) arquivos=("$2") ;;
     lixeira-antigos:*)
-      local arquivos
-      arquivos=$(arquivos_antigos "$1" "$2") || return 1
-      mandar_lixeira ${(0)arquivos} ;;
+      lista=$(mktemp) || return 1
+      if ! arquivos_antigos "$1" "$2" > "$lista"; then rm -f "$lista"; return 1; fi
+      while IFS= read -r -d '' item; do arquivos+=("$item"); done < "$lista"
+      rm -f "$lista" ;;
     *) return 1 ;;
   esac
+  mandar_lixeira "${arquivos[@]}"
 }
 
-vai_pra_lixeira() { [[ $1 == lixeira-* ]]; }
+vai_pra_lixeira() { return 0; }
 
 # ─── dicas pras pastas grandes ─────────────────────────────────────────────
 
@@ -606,7 +676,7 @@ cmd_vigiar() {
     n=$(find "$c" -type f 2>/dev/null | wc -l | tr -d ' ')
     (( n > LIMITE_CRASH )) || continue
     tam=$(kb "$c")
-    if [[ $AUTO_LIMPEZA == sim && $LIMPAR_CRASH == sim ]]; then
+    if [[ $SOMENTE_ANALISAR == nao && $CONFIG_INVALIDA == 0 && $AUTO_LIMPEZA == sim && $LIMPAR_CRASH == sim ]]; then
       local falha=0
       for s in pending completed new; do
         [[ -d $c/$s ]] || continue
@@ -643,7 +713,7 @@ cmd_vigiar() {
 
   # 4) meta de espaço livre
   if (( livre < meta )); then
-    if [[ $AUTO_LIMPEZA == sim ]]; then
+    if [[ $SOMENTE_ANALISAR == nao && $CONFIG_INVALIDA == 0 && $AUTO_LIMPEZA == sim ]]; then
       cmd_limpar --executar --sim --silencioso --automatico
       livre=$(livre_kb)
       (( LIBERADO_KB > 0 )) && avisar "Limpeza automática" "Liberei $(humano $LIBERADO_KB). Agora: $(humano $livre) livres."
@@ -661,6 +731,7 @@ salvar_config() {
   cat > "$CONF" <<EOF
 # disco-livre — configuração (edite à vontade ou use: disco-livre config)
 SEGURANCA_VERSAO=2
+SOMENTE_ANALISAR=$SOMENTE_ANALISAR
 META_GB=$META_GB
 AUTO_LIMPEZA=$AUTO_LIMPEZA
 LIMPAR_CRASH=$LIMPAR_CRASH
@@ -674,6 +745,7 @@ EOF
 cmd_config() {
   if (( $# == 0 )); then
     print -r -- "${B}Configuração${N} ${D}($(curto "$CONF"))${N}"
+    print -r -- "  somente-analisar $SOMENTE_ANALISAR  bloquear alterações nos dados"
     print -r -- "  meta           $META_GB GB      espaço livre mínimo"
     print -r -- "  auto-limpeza   $AUTO_LIMPEZA        limpar lixo seguro sozinho abaixo da meta"
     print -r -- "  limpar-crash   $LIMPAR_CRASH        apagar sozinho surtos de crash"
@@ -687,6 +759,7 @@ cmd_config() {
   simular config "$@" && return 0
   local chave=$1 valor=$2
   case $chave in
+    somente-analisar) [[ $valor == (sim|nao) ]] || erro "use: sim ou nao"; SOMENTE_ANALISAR=$valor; AUTO_LIMPEZA=nao; LIMPAR_CRASH=nao ;;
     meta)         [[ $valor == <1-> ]] || erro "use: disco-livre config meta 30"; META_GB=$valor ;;
     auto-limpeza) [[ $valor == (sim|nao) ]] || erro "use: sim ou nao"; AUTO_LIMPEZA=$valor ;;
     limpar-crash) [[ $valor == (sim|nao) ]] || erro "use: sim ou nao"; LIMPAR_CRASH=$valor ;;
@@ -741,6 +814,7 @@ plist_da_tarefa() {
 
 cmd_pausar_tarefa() {
   simular pausar-tarefa "$@" && return 0
+  permitir_alteracao || return 1
   [[ -n $1 ]] || erro "use: disco-livre pausar-tarefa <nome-da-tarefa>"
   plist_da_tarefa "$1" >/dev/null || erro "não achei a tarefa $1 em ~/Library/LaunchAgents"
   launchctl bootout "gui/$UID/$1" 2>/dev/null
@@ -751,6 +825,7 @@ cmd_pausar_tarefa() {
 
 cmd_religar_tarefa() {
   simular religar-tarefa "$@" && return 0
+  permitir_alteracao || return 1
   [[ -n $1 ]] || erro "use: disco-livre religar-tarefa <nome-da-tarefa>"
   local f
   f=$(plist_da_tarefa "$1") || erro "não achei a tarefa $1 em ~/Library/LaunchAgents"
@@ -822,6 +897,7 @@ pasta_sem_uso() {
 
 cmd_mover() {
   simular mover "$@" && return 0
+  permitir_alteracao || return 1
   (( $# == 2 )) || erro "use: disco-livre mover <pasta> <pasta-de-destino-no-HD-externo>"
   local entrada=${1%/}
   [[ -L $entrada ]] && erro "$entrada já é um atalho — já foi movida"
@@ -854,7 +930,7 @@ cmd_mover() {
   confirmar "Continuar?" || { print -r -- "Cancelado."; return 0; }
 
   print -r -- "Copiando…"
-  mkdir -p "$final" || erro "não consegui criar $final"
+  # ditto cria a raiz com os metadados da origem, mesmo sob umask restritiva.
   ditto --rsrc --extattr --acl "$orig" "$final" || erro "a cópia falhou; origem preservada. Cópia parcial: $final"
   verificar_copia "$orig" "$final" || erro "a cópia não bateu; origem preservada. Cópia parcial: $final"
   pasta_sem_uso "$orig" || erro "a pasta entrou em uso ou a verificação falhou; origem preservada"
@@ -890,6 +966,7 @@ limpar_linhas() {
   local l id nivel t quem desc nota tipo cam cond antes=$(livre_kb) depois rc=0
   LIBERADO_KB=0 LIXEIRA_KB=0 LIMPOS=0 PULADOS=() FALHAS=()
   simular limpar-linhas "$@" && return 0
+  permitir_alteracao || { FALHAS+=("Operação bloqueada|Modo somente analisar"); return 1; }
   for l in "$@"; do
     IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$l"
     [[ -e $cam ]] || continue
@@ -959,7 +1036,7 @@ cmd_geral() {
   local i id nivel t quem desc nota tipo cam
   for (( i = 1; i <= ${#linhas}; i++ )); do
     IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$linhas[i]"
-    [[ $nivel == seguro && -z $quem ]] && marc[i]=1 || marc[i]=0
+    marc[i]=0
   done
 
   _mostrar() {
@@ -969,12 +1046,13 @@ cmd_geral() {
       IFS='|' read -r id nivel t quem desc nota tipo cam <<< "$linhas[i]"
       if [[ $nivel != $grupo ]]; then
         grupo=$nivel
-        [[ $nivel == seguro ]] && print -r -- "  ${B}SEGURO${N} ${D}— se recria sozinho, não perde nada${N}" \
+        [[ $nivel == seguro ]] && print -r -- "  ${B}CACHES E RELATÓRIOS${N} ${D}— candidatos à revisão${N}" \
                                || { print -r -- ""; print -r -- "  ${B}REVISE${N} ${D}— é seu: só sai se você marcar${N}"; }
       fi
       (( tot += t ))
       if (( marc[i] )); then caixa="${G}[✓]${N}"; (( sel += t )); else caixa="[ ]"; fi
       printf "   %s %2d  %s%9s%s  %s\n" "$caixa" $i "$B" "$(humano $t)" "$N" "$desc"
+      print -r -- "                    $(curto "$cam")"
       [[ -n $nota ]] && print -r -- "                    ${D}↳ $nota${N}"
       [[ -n $quem ]] && print -r -- "                    ${Y}⚠ feche o $quem pra limpar${N}"
     done
@@ -982,6 +1060,11 @@ cmd_geral() {
     print -r -- "  Encontrei ${B}$(humano $tot)${N} · Marcado: ${G}${B}$(humano $sel)${N}"
   }
 
+  if [[ $SOMENTE_ANALISAR != nao || $CONFIG_INVALIDA != 0 ]]; then
+    _mostrar
+    print -r -- "  Somente analisar: alterações bloqueadas."
+    return 0
+  fi
   if [[ ! -t 0 ]]; then
     _mostrar
     print -r -- ""
@@ -1084,6 +1167,10 @@ cmd_limpar_itens() {
 
 cmd_esvaziar_lixeira() {
   simular esvaziar-lixeira && return 0
+  permitir_alteracao || return 1
+  [[ " $* " == *" --confirmar-exclusao-permanente "* ]] || {
+    print -r -- "Exclusão permanente exige --confirmar-exclusao-permanente e afeta toda a Lixeira." >&2; return 1
+  }
   if [[ $1 != --sim ]]; then
     confirmar "Esvaziar a Lixeira? Isso apaga de vez o que está lá." || { print -r -- "Cancelado."; return 0; }
   fi
@@ -1150,7 +1237,7 @@ cmd_dados() {
       ativo && at=1
       [[ $AUTO_LIMPEZA == sim ]] && al=1
       print -rn -- "{\"versao\":\"$VERSAO\",\"livre\":$(livre_kb),\"total\":$(total_kb),\"meta_kb\":$(gb_kb $META_GB),\"meta_gb\":$META_GB"
-      print -rn -- ",\"vigilancia\":$(bool $at),\"auto_limpeza\":$(bool $al),\"limpar_crash\":$([[ $LIMPAR_CRASH == sim ]] && print true || print false),\"intervalo\":$INTERVALO_HORAS"
+      print -rn -- ",\"somente_analisar\":$([[ $SOMENTE_ANALISAR == nao && $CONFIG_INVALIDA == 0 ]] && print false || print true),\"vigilancia\":$(bool $at),\"auto_limpeza\":$(bool $al),\"limpar_crash\":$([[ $LIMPAR_CRASH == sim ]] && print true || print false),\"intervalo\":$INTERVALO_HORAS"
       print -rn -- ",\"tendencia_kb\":${tend:-null},\"primeira_feita\":$(primeira_feita && print -n true || print -n false)"
 
       print -rn -- ",\"lixo\":["; sep=
@@ -1187,7 +1274,7 @@ cmd_dados() {
       print -rn -- "{\"livre\":$(livre_kb),\"itens\":["; sep=
       while IFS='|' read -r id nivel t quem desc nota tipo cam; do
         vai_pra_lixeira "$tipo" && b=1 || b=0
-        print -rn -- "$sep{\"id\":$(js "$id"),\"nivel\":$(js "$nivel"),\"kb\":$t,\"quem\":$(js "$quem"),\"desc\":$(js "$desc"),\"nota\":$(js "$nota"),\"lixeira\":$(bool $b)}"; sep=,
+        print -rn -- "$sep{\"id\":$(js "$id"),\"nivel\":$(js "$nivel"),\"kb\":$t,\"quem\":$(js "$quem"),\"desc\":$(js "$desc"),\"nota\":$(js "$nota"),\"cam\":$(js "$cam"),\"lixeira\":$(bool $b)}"; sep=,
       done < <(linhas_geral --nova)
       print -r -- "]}"
       ;;

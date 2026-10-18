@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - name: Check zsh syntax
         run: |
-          for script in bin/disco-livre install.sh instalar.sh uninstall.sh app/build.sh; do
+          for script in bin/disco-livre install.sh instalar.sh uninstall.sh app/build.sh scripts/notarizar.sh; do
             zsh -n "$script"
           done
       - name: Run isolated regression tests
