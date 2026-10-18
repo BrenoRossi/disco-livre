@@ -15,7 +15,13 @@ enum CLI {
     static let log = casa + "/Library/Logs/disco-livre.log"
     static var existe: Bool { FileManager.default.isExecutableFile(atPath: caminho) }
 
-    static func rodar(_ args: [String]) async -> String {
+    struct Resultado {
+        var saida: String
+        var codigo: Int32
+        var sucesso: Bool { codigo == 0 }
+    }
+
+    static func executar(_ args: [String]) async -> Resultado {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let p = Process()
@@ -23,14 +29,21 @@ enum CLI {
                 p.arguments = [caminho] + args
                 let saida = Pipe()
                 p.standardOutput = saida
-                p.standardError = FileHandle.nullDevice
+                p.standardError = saida
                 p.standardInput = FileHandle.nullDevice
-                do { try p.run() } catch { cont.resume(returning: ""); return }
+                do { try p.run() } catch {
+                    cont.resume(returning: Resultado(saida: error.localizedDescription, codigo: -1)); return
+                }
                 let dados = saida.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit()
-                cont.resume(returning: String(decoding: dados, as: UTF8.self))
+                cont.resume(returning: Resultado(saida: String(decoding: dados, as: UTF8.self), codigo: p.terminationStatus))
             }
         }
+    }
+
+    static func rodar(_ args: [String]) async -> String {
+        let resultado = await executar(args)
+        return resultado.sucesso ? resultado.saida : ""
     }
 }
 
@@ -49,9 +62,10 @@ enum Instalador {
     }
 
     /// Instala ou atualiza a ferramenta que vem dentro do app. Na primeira vez,
-    /// também liga a vigilância com a meta padrão (30 GB). Retorna true se instalou agora.
+    /// configura a meta de 30 GB, sem ligar vigilância ou limpeza. Retorna true se instalou agora.
     @discardableResult
     static func garantir() async -> Bool {
+        guard ProcessInfo.processInfo.environment["DISCO_LIVRE_SIMULAR"] != "1" else { return false }
         let fm = FileManager.default
         guard let embutida = Bundle.main.path(forResource: "disco-livre", ofType: nil) else { return false }
         let primeiraVez = !fm.fileExists(atPath: casa + "/.config/disco-livre/config")
@@ -85,7 +99,7 @@ enum Instalador {
         if primeiraVez {
             _ = await CLI.rodar(["config", "meta", "30"])
             _ = await CLI.rodar(["config", "auto-limpeza", "nao"])
-            _ = await CLI.rodar(["ativar"])
+            _ = await CLI.rodar(["config", "limpar-crash", "nao"])
         }
         return true
     }
@@ -125,6 +139,7 @@ struct Resumo: Decodable {
     var metaGb: Int
     var vigilancia: Bool
     var autoLimpeza: Bool
+    var limparCrash: Bool?
     var intervalo: Int
     var tendenciaKb: Int64?
     var primeiraFeita: Bool?   // opcional: ferramentas antigas não mandam
@@ -167,6 +182,7 @@ struct Geral: Decodable {
 }
 
 struct Pulado: Decodable, Hashable { var desc: String; var quem: String }
+struct FalhaLimpeza: Decodable { var desc: String; var erro: String }
 
 struct ResultadoLimpeza: Decodable {
     var liberadoKb: Int64
@@ -175,6 +191,7 @@ struct ResultadoLimpeza: Decodable {
     var livreAntes: Int64
     var livreDepois: Int64
     var pulados: [Pulado]
+    var erros: [FalhaLimpeza]?
 }
 
 struct Pasta: Decodable, Identifiable {
@@ -206,6 +223,7 @@ final class Estado: ObservableObject {
     @Published var medindoPastas = false
     @Published var limpando = false
     @Published var aviso: String?
+    @Published var falhou = false
 
     // análise geral (primeira vez e sob demanda)
     enum FaseGeral { case fechada, analisando, lista, limpando, resultado }
@@ -234,7 +252,7 @@ final class Estado: ObservableObject {
     }
 
     func checarAtualizacao() async {
-        guard let url = URL(string: "https://api.github.com/repos/Willclaf/disco-livre/releases/latest"),
+        guard let url = URL(string: "https://api.github.com/repos/BrenoRossi/disco-livre/releases/latest"),
               let (dados, _) = try? await URLSession.shared.data(from: url),
               let json = try? JSONSerialization.jsonObject(with: dados) as? [String: Any],
               let tag = json["tag_name"] as? String else { return }
@@ -242,13 +260,11 @@ final class Estado: ObservableObject {
         novaVersao = Estado.maisNova(v, que: Estado.versaoDoApp) ? v : nil
     }
 
-    /// Roda o atualizador da ferramenta. Ele fecha e reabre o app sozinho.
+    /// Abre a página para revisão; não executa código remoto.
     func atualizarApp() {
-        atualizando = true
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-c", "\"$HOME/.local/bin/disco-livre\" atualizar >> \"$HOME/Library/Logs/disco-livre.log\" 2>&1"]
-        try? p.run()
+        guard let url = URL(string: "https://github.com/BrenoRossi/disco-livre/releases") else { return }
+        NSWorkspace.shared.open(url)
+        aviso = "Revise o código da versão antes de instalar."
     }
 
     var aoAtualizar: (() -> Void)?
@@ -282,12 +298,15 @@ final class Estado: ObservableObject {
         let antes = resumo?.livre ?? 0
         limpando = true
         aviso = nil
-        _ = await CLI.rodar(["limpar", "--executar", "--sim"])
+        let resultado = await CLI.executar(["limpar", "--executar", "--sim"])
         ultimaAtualizacao = .distantPast
         await atualizar()
         limpando = false
+        falhou = !resultado.sucesso
         let ganho = (resumo?.livre ?? 0) - antes
-        aviso = ganho > 102_400 ? "Pronto! Liberei \(tamanho(ganho))." : "Pronto! Lixo limpo."
+        aviso = resultado.sucesso
+            ? "Limpeza concluída. Aumento medido: \(tamanho(max(0, ganho)))."
+            : "Falha na limpeza. Veja o histórico; alguns arquivos podem ter permanecido."
     }
 
     func mudarMeta(_ gb: Int) {
@@ -298,20 +317,31 @@ final class Estado: ObservableObject {
         tarefaMeta = Task {
             try? await Task.sleep(nanoseconds: 700_000_000)
             if Task.isCancelled { return }
-            _ = await CLI.rodar(["config", "meta", "\(gb)"])
+            let operacao = await CLI.executar(["config", "meta", "\(gb)"])
+            if !operacao.sucesso { falhou = true; aviso = "Não consegui salvar a meta." }
         }
     }
 
     func mudarVigilancia(_ ligar: Bool) async {
-        resumo?.vigilancia = ligar
-        _ = await CLI.rodar([ligar ? "ativar" : "desativar"])
+        let operacao = await CLI.executar([ligar ? "ativar" : "desativar"])
+        falhou = !operacao.sucesso
+        if falhou { aviso = "Não consegui alterar a vigilância." }
         ultimaAtualizacao = .distantPast
         await atualizar()
     }
 
     func mudarAutoLimpeza(_ ligar: Bool) async {
-        resumo?.autoLimpeza = ligar
-        _ = await CLI.rodar(["config", "auto-limpeza", ligar ? "sim" : "nao"])
+        let r = await CLI.executar(["config", "auto-limpeza", ligar ? "sim" : "nao"])
+        falhou = !r.sucesso
+        if r.sucesso { resumo?.autoLimpeza = ligar }
+        else { aviso = "Não consegui alterar a limpeza automática." }
+    }
+
+    func mudarLimparCrash(_ ligar: Bool) async {
+        let r = await CLI.executar(["config", "limpar-crash", ligar ? "sim" : "nao"])
+        falhou = !r.sucesso
+        if r.sucesso { resumo?.limparCrash = ligar }
+        else { aviso = "Não consegui alterar a limpeza de relatórios." }
     }
 
     private func decodificador() -> JSONDecoder {
@@ -323,6 +353,8 @@ final class Estado: ObservableObject {
     func analisarGeral() async {
         fase = .analisando
         resultado = nil
+        aviso = nil
+        falhou = false
         lixeiraVazia = false
         let txt = await CLI.rodar(["dados", "geral"])
         guard let g = try? decodificador().decode(Geral.self, from: Data(txt.utf8)) else {
@@ -348,8 +380,12 @@ final class Estado: ObservableObject {
     func limparMarcados() async {
         guard !marcados.isEmpty else { return }
         fase = .limpando
-        let txt = await CLI.rodar(["limpar-itens"] + Array(marcados) + ["--json"])
-        resultado = try? decodificador().decode(ResultadoLimpeza.self, from: Data(txt.utf8))
+        let operacao = await CLI.executar(["limpar-itens"] + Array(marcados) + ["--json"])
+        resultado = try? decodificador().decode(ResultadoLimpeza.self, from: Data(operacao.saida.utf8))
+        falhou = !operacao.sucesso || resultado == nil || !(resultado?.erros ?? []).isEmpty
+        if falhou {
+            aviso = "A limpeza não foi concluída para todos os itens. Consulte o histórico."
+        }
         fase = .resultado
         ultimaAtualizacao = .distantPast
         await atualizar()
@@ -370,18 +406,21 @@ final class Estado: ObservableObject {
 
     func esvaziarLixeira() async {
         esvaziandoLixeira = true
-        _ = await CLI.rodar(["esvaziar-lixeira", "--sim"])
+        let operacao = await CLI.executar(["esvaziar-lixeira", "--sim"])
         esvaziandoLixeira = false
-        lixeiraVazia = true
+        lixeiraVazia = operacao.sucesso
+        falhou = !operacao.sucesso
+        if !operacao.sucesso { aviso = "Não consegui esvaziar a Lixeira." }
         ultimaAtualizacao = .distantPast
         await atualizar()
     }
 
     func pausar(_ label: String) async {
-        _ = await CLI.rodar(["pausar-tarefa", label])
+        let operacao = await CLI.executar(["pausar-tarefa", label])
         ultimaAtualizacao = .distantPast
         await atualizar()
-        aviso = "Tarefa \(label) pausada."
+        falhou = !operacao.sucesso
+        aviso = operacao.sucesso ? "Tarefa \(label) pausada." : "Não consegui pausar \(label)."
     }
 }
 
@@ -661,7 +700,8 @@ struct PainelView: View {
                 }
             }
             if let a = e.aviso {
-                Label(a, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                Label(a, systemImage: e.falhou ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(e.falhou ? .orange : .green)
             }
         }
     }
@@ -802,6 +842,11 @@ struct PainelView: View {
             Toggle("Limpar sozinho abaixo da meta",
                    isOn: Binding(get: { r.autoLimpeza }, set: { v in Task { await e.mudarAutoLimpeza(v) } }))
                 .disabled(!r.vigilancia)
+            Toggle("Apagar relatórios de falhas automaticamente",
+                   isOn: Binding(get: { r.limparCrash ?? false }, set: { v in Task { await e.mudarLimparCrash(v) } }))
+                .disabled(!r.vigilancia || !r.autoLimpeza)
+            Text("Relatórios só são apagados automaticamente com as duas opções de limpeza ligadas.")
+                .font(.caption2).foregroundStyle(.secondary)
             Toggle("Abrir ao ligar o Mac", isOn: Binding(get: { iniciarComMac }, set: { v in
                 do {
                     if v { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
@@ -999,20 +1044,21 @@ struct AnaliseGeralView: View {
         let r = e.resultado
         let liberado = r?.liberadoKb ?? 0
         return VStack(spacing: 14) {
-            Text(liberado > 0 ? "🎉" : "✅")
+            Text(e.falhou ? "⚠️" : (liberado > 0 ? "🎉" : "✅"))
                 .font(.system(size: 52))
                 .scaleEffect(festa ? 1 : 0.3)
                 .rotationEffect(.degrees(festa ? 0 : -25))
                 .onAppear { withAnimation(.spring(response: 0.45, dampingFraction: 0.55)) { festa = true } }
             VStack(spacing: 2) {
-                Text(liberado > 0 ? "Você liberou" : "Pronto!").font(.callout).foregroundStyle(.secondary)
+                Text(e.falhou ? "Limpeza incompleta" : (liberado > 0 ? "Aumento medido do espaço livre" : "Limpeza concluída"))
+                    .font(.callout).foregroundStyle(.secondary)
                 if liberado > 0 {
                     Text(tamanho(liberado))
                         .font(.system(size: 40, weight: .heavy, design: .rounded))
                         .foregroundStyle(LinearGradient(colors: [Color(red: 0.16, green: 0.80, blue: 0.56),
                                                                  Color(red: 0.10, green: 0.55, blue: 0.95)],
                                                         startPoint: .leading, endPoint: .trailing))
-                    Text("que estavam escondidos").font(.callout).foregroundStyle(.secondary)
+                    Text("medido após a operação").font(.callout).foregroundStyle(.secondary)
                 }
             }
             if let r {
@@ -1040,6 +1086,12 @@ struct AnaliseGeralView: View {
                                 .font(.caption).foregroundStyle(.orange)
                         }
                     }
+                }
+            }
+            if e.falhou, let aviso = e.aviso {
+                Text(aviso).font(.caption).foregroundStyle(.orange)
+                ForEach(Array((r?.erros ?? []).enumerated()), id: \.offset) { _, erro in
+                    Text("\(erro.desc): \(erro.erro)").font(.caption2).foregroundStyle(.orange)
                 }
             }
             Button { e.concluirGeral() } label: { Text("Concluir").frame(maxWidth: .infinity) }
