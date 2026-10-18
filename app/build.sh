@@ -21,7 +21,8 @@ iconutil -c icns "$TMP/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns
 
 # a ferramenta e a skill vão dentro do app (autoinstalação pra quem baixa o .dmg)
 cp ../bin/disco-livre "$APP/Contents/Resources/disco-livre"
-cp -R ../skill/disco-livre "$APP/Contents/Resources/skill-disco-livre"
+mkdir -p "$APP/Contents/Resources/skill-disco-livre"
+cp ../skill/disco-livre/SKILL.md "$APP/Contents/Resources/skill-disco-livre/SKILL.md"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

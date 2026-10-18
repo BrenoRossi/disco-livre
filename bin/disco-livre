@@ -245,6 +245,7 @@ quem_usa() {
 
 # Manda pra Lixeira (recuperável). macOS 15+: /usr/bin/trash; antes disso, pelo Finder.
 mandar_lixeira() {
+  simular lixeira "$@" && return 0
   (( $# )) || return 0
   if [[ -x /usr/bin/trash ]]; then
     /usr/bin/trash "$@" 2>/dev/null
@@ -586,6 +587,7 @@ cmd_analisar() {
 }
 
 registrar() {
+  simular registrar && return 0
   mkdir -p "$DIR_CONF"
   print -r -- "$(date +%s),$(livre_kb)" >> "$HIST"
   # guarda só os últimos ~60 dias (a cada 3h ≈ 500 linhas)
@@ -654,6 +656,7 @@ cmd_vigiar() {
 }
 
 salvar_config() {
+  simular salvar-config && return 0
   mkdir -p "$DIR_CONF"
   cat > "$CONF" <<EOF
 # disco-livre — configuração (edite à vontade ou use: disco-livre config)
@@ -802,6 +805,21 @@ verificar_copia() {
   return 0
 }
 
+pasta_sem_uso() {
+  local erros saida codigo
+  erros=$(mktemp) || return 1
+  saida=$(lsof +D "$1" 2> "$erros")
+  codigo=$?
+  # lsof: 1 sem resultado é normal; advertências e outros erros não são.
+  if [[ -n $saida || -s $erros ]] || (( codigo != 0 && codigo != 1 )); then
+    print -r -- "Não consegui confirmar que a pasta está livre de uso: $1" >&2
+    rm -f "$erros"
+    return 1
+  fi
+  rm -f "$erros"
+  return 0
+}
+
 cmd_mover() {
   simular mover "$@" && return 0
   (( $# == 2 )) || erro "use: disco-livre mover <pasta> <pasta-de-destino-no-HD-externo>"
@@ -818,9 +836,8 @@ cmd_mover() {
   [[ -e $final || -L $final ]] && erro "já existe $final"
   local backup="$orig.disco-livre-backup-$(date +%Y%m%d%H%M%S)-$$"
   [[ -e $backup || -L $backup ]] && erro "já existe $backup"
-  local abertos
-  abertos=$(lsof +D "$orig" 2>/dev/null)
-  [[ -z $abertos ]] || erro "a pasta está em uso; feche os aplicativos antes de mover"
+  [[ -z $(find "$orig" ! -type f ! -type d ! -type l -print) ]] || erro "a pasta contém arquivos especiais; origem preservada"
+  pasta_sem_uso "$orig" || erro "a pasta está em uso ou a verificação falhou; origem preservada"
 
   local tam=$(kb "$orig") livre_dest
   livre_dest=$(df -k "$dest" | awk 'NR==2{print $4}')
@@ -840,7 +857,7 @@ cmd_mover() {
   mkdir -p "$final" || erro "não consegui criar $final"
   ditto --rsrc --extattr --acl "$orig" "$final" || erro "a cópia falhou; origem preservada. Cópia parcial: $final"
   verificar_copia "$orig" "$final" || erro "a cópia não bateu; origem preservada. Cópia parcial: $final"
-  [[ -z $(lsof +D "$orig" 2>/dev/null) ]] || erro "a pasta entrou em uso; origem preservada"
+  pasta_sem_uso "$orig" || erro "a pasta entrou em uso ou a verificação falhou; origem preservada"
   mv "$orig" "$backup" || erro "não consegui preservar a origem"
   if ! verificar_copia "$backup" "$final" || ! ln -s "$final" "$orig"; then
     mv "$backup" "$orig" || erro "restaure a origem manualmente a partir de $backup"
@@ -855,7 +872,7 @@ cmd_mover() {
 CACHE_GERAL="$DIR_CONF/geral.cache"
 
 primeira_feita()  { grep -q '^primeira=' "$ESTADO" 2>/dev/null; }
-marcar_primeira() { mkdir -p "$DIR_CONF"; primeira_feita || print -r -- "primeira=$(date +%s)" >> "$ESTADO"; }
+marcar_primeira() { simular marcar-primeira && return 0; mkdir -p "$DIR_CONF"; primeira_feita || print -r -- "primeira=$(date +%s)" >> "$ESTADO"; }
 
 # linhas da análise: usa a medição dos últimos 15 min se existir (medir tudo leva ~30 s)
 linhas_geral() {
@@ -1098,7 +1115,7 @@ cmd_apoiar() {
 # ─── atualização ──────────────────────────────────────────────────────────
 
 ultima_versao() {
-  curl -fsL --max-time 6 "https://api.github.com/repos/Willclaf/disco-livre/releases/latest" 2>/dev/null |
+  curl -fsL --max-time 6 "https://api.github.com/repos/BrenoRossi/disco-livre/releases/latest" 2>/dev/null |
     sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1
 }
 
@@ -1109,21 +1126,15 @@ mais_nova() {
 }
 
 cmd_atualizar() {
-  local nova=$(ultima_versao)
-  [[ -n $nova ]] || erro "não consegui ver a última versão (está sem internet?)"
+  simular atualizar && return 0
   if [[ $1 == --checar ]]; then
+    local nova=$(ultima_versao)
     mais_nova "$nova" "$VERSAO" && print -r -- "$nova"
     return 0
   fi
-  if ! mais_nova "$nova" "$VERSAO" && [[ $1 != --forcar ]]; then
-    print -r -- "${G}✓${N} Você já está na versão mais nova ($VERSAO)."
-    return 0
-  fi
-  print -r -- "Atualizando o Disco Livre $VERSAO → $nova… ${D}(suas configurações ficam como estão)${N}"
-  zsh -c "$(curl -fsSL https://raw.githubusercontent.com/Willclaf/disco-livre/main/instalar.sh)" -- --sim --nao-abrir || erro "a atualização falhou"
-  log "atualizou: $VERSAO → $nova"
-  [[ -d "/Applications/Disco Livre.app" || -d "$HOME/Applications/Disco Livre.app" ]] && open -a "Disco Livre"
-  return 0
+  print -r -- "Atualização automática desativada: nenhum código remoto foi executado."
+  print -r -- "Revise um commit de https://github.com/BrenoRossi/disco-livre"
+  print -r -- "e instale o checkout limpo com ./install.sh --revisao <SHA completo>."
 }
 
 # ─── dados pro app (JSON) ─────────────────────────────────────────────────
@@ -1139,7 +1150,7 @@ cmd_dados() {
       ativo && at=1
       [[ $AUTO_LIMPEZA == sim ]] && al=1
       print -rn -- "{\"versao\":\"$VERSAO\",\"livre\":$(livre_kb),\"total\":$(total_kb),\"meta_kb\":$(gb_kb $META_GB),\"meta_gb\":$META_GB"
-      print -rn -- ",\"vigilancia\":$(bool $at),\"auto_limpeza\":$(bool $al),\"intervalo\":$INTERVALO_HORAS"
+      print -rn -- ",\"vigilancia\":$(bool $at),\"auto_limpeza\":$(bool $al),\"limpar_crash\":$([[ $LIMPAR_CRASH == sim ]] && print true || print false),\"intervalo\":$INTERVALO_HORAS"
       print -rn -- ",\"tendencia_kb\":${tend:-null},\"primeira_feita\":$(primeira_feita && print -n true || print -n false)"
 
       print -rn -- ",\"lixo\":["; sep=
@@ -1195,7 +1206,7 @@ ${B}Uso:${N}
   disco-livre limpar               mostra o lixo seguro (simulação)
   disco-livre limpar --executar    apaga o lixo seguro (pede confirmação)
   disco-livre esvaziar-lixeira     esvazia a Lixeira (pede confirmação)
-  disco-livre atualizar            instala a versão mais nova (mantém suas configurações)
+  disco-livre atualizar            mostra como revisar uma atualização manual
   disco-livre apoiar               ☕ me paga um café (Pix)
   disco-livre mover <pasta> <dest> move uma pasta pro HD externo e deixa um atalho
 

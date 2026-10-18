@@ -313,6 +313,46 @@ cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
         self.assertFalse(final.exists())
         self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
 
+    def test_move_refuses_permission_error_from_open_file_inspection(self):
+        origin, final = self.make_move()
+        result = self.shell('''
+lsof() { print -r -- 'lsof: permission denied' >&2; return 2; }
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(origin.is_symlink())
+        self.assertFalse(final.exists())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+
+    def test_move_refuses_warning_even_with_no_open_file_results(self):
+        origin, final = self.make_move()
+        result = self.shell('''
+lsof() { print -r -- "lsof: WARNING: can't stat() filesystem" >&2; return 1; }
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(origin.is_symlink())
+        self.assertFalse(final.exists())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+
+    def test_move_keeps_original_when_inspection_fails_after_copy(self):
+        origin, final = self.make_move()
+        result = self.shell('''
+lsof() {
+  if [[ ! -f $TEST_FIXTURE/inspected-once ]]; then
+    print called > "$TEST_FIXTURE/inspected-once"
+    return 1
+  fi
+  print -r -- 'lsof: permission denied' >&2
+  return 2
+}
+cmd_mover "$TEST_FIXTURE/origin" "$TEST_FIXTURE/destination"
+''')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(origin.is_symlink())
+        self.assertEqual((origin / "data.txt").read_text(), "fixture payload\n")
+        self.assertEqual((final / "data.txt").read_text(), "fixture payload\n")
+
     def test_metadata_change_during_rename_restores_original_safely(self):
         origin, _ = self.make_move()
         result = self.shell('''
@@ -368,6 +408,97 @@ cmd_mover "$TEST_FIXTURE/variation-{index}/origin" "$TEST_FIXTURE/variation-{ind
                 final = destination / "origin"
                 self.assertEqual((final / name).read_bytes(), b"payload" * (index + 1))
                 self.assertEqual(os.readlink(final / "relative"), name)
+
+    def test_update_does_not_execute_downloaded_script(self):
+        result = self.shell('''
+ultima_versao() { print 9.9.9; }
+curl() { print -r -- 'print reached > "$TEST_FIXTURE/update-sentinel"'; }
+open() { return 0; }
+cmd_atualizar
+''')
+        self.assertFalse((self.fixture / "update-sentinel").exists(),
+                         "remote update payload executed: " + result.stdout + result.stderr)
+
+    def test_bootstrap_does_not_download_mutable_main(self):
+        tools = self.fixture / "tools"
+        tools.mkdir()
+        (self.fixture / "bootstrap-work").mkdir()
+        stubs = {
+            "curl": 'print -r -- "$*" > "$TEST_FIXTURE/download-called"; exit 13',
+            "tar": 'exit 13',
+            "mktemp": 'print -r -- "$TEST_FIXTURE/bootstrap-work"',
+        }
+        for name, body in stubs.items():
+            executable = tools / name
+            executable.write_text("#!/bin/zsh\n" + body + "\n")
+            executable.chmod(0o755)
+        result = subprocess.run(
+            ["/bin/zsh", "-f", str(ROOT / "instalar.sh")],
+            env={**os.environ, "TEST_FIXTURE": str(self.fixture),
+                 "PATH": str(tools) + ":/usr/bin:/bin:/usr/sbin:/sbin"},
+            text=True, capture_output=True, timeout=15,
+        )
+        marker = self.fixture / "download-called"
+        downloaded = marker.read_text() if marker.exists() else ""
+        self.assertNotRegex(downloaded, r"(?:/main(?:[/.]|$)|/heads/main(?:[/.]|$))",
+                            result.stdout + result.stderr)
+
+    def test_install_simulation_guard_precedes_installation_writes(self):
+        # Deliberately static: running the vulnerable installer to demonstrate
+        # this defect would install into the real HOME. The source must first
+        # handle the simulation variable before its first installation mutation.
+        source = (ROOT / "install.sh").read_text()
+        executable_lines = "\n".join(line for line in source.splitlines()
+                                     if not line.lstrip().startswith("#"))
+        first_mutation = executable_lines.index('mkdir -p "$BIN"')
+        self.assertIn("DISCO_LIVRE_SIMULAR", executable_lines[:first_mutation],
+                      "installer writes into HOME before handling simulation")
+
+    def test_legacy_config_migration_disables_implicit_cleanup(self):
+        (self.config / "config").write_text(
+            "META_GB=45\nAUTO_LIMPEZA=sim\nLIMPAR_CRASH=sim\n")
+        # Source the fixture config for this migration test; unlike the common
+        # isolated library, this preserves config initialization verbatim.
+        self.library.write_text(SOURCE.read_text().split("case ${1:-status} in")[0])
+        result = self.shell('print -r -- "MIGRATED=$META_GB,$AUTO_LIMPEZA,$LIMPAR_CRASH"\n')
+        self.assert_shell_ok(result)
+        self.assertIn("MIGRATED=45,nao,nao", result.stdout)
+
+    def test_installer_staging_excludes_untracked_and_ignored_skill_payloads(self):
+        repository = self.fixture / "repository"
+        repository.mkdir()
+        skill = repository / "skill" / "disco-livre"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("reviewed skill")
+        (repository / ".gitignore").write_text("ignored-payload.sh\n")
+        for arguments in [
+            ["init", "-q"], ["add", "."],
+            ["-c", "user.name=Regression", "-c", "user.email=fixture@example.invalid",
+             "commit", "-qm", "fixture reviewed source"],
+        ]:
+            subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True)
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+        (skill / "untracked-payload.sh").write_text("unreviewed code")
+        (skill / "ignored-payload.sh").write_text("ignored unreviewed code")
+
+        # Exercise only the installer's staging section. The installation body
+        # never runs, so no CLI/skill/config/service can be written into HOME.
+        source = (ROOT / "install.sh").read_text()
+        self.assertIn('staging_source=', source, "installer has no isolated source staging")
+        self.assertIn('cd "$staging_source"', source)
+        staging = source[source.index("staging_source="):source.index('cd "$staging_source"')]
+        staging += 'cd "$staging_source"\nfind . -type f -print\n'
+        temporary = self.fixture / "archive-tmp"
+        temporary.mkdir()
+        result = subprocess.run(
+            ["/bin/zsh", "-f", "-c", "set -e\n" + staging], cwd=repository,
+            env={**os.environ, "REVISAO": revision, "TMPDIR": str(temporary)},
+            text=True, capture_output=True, timeout=15,
+        )
+        self.assert_shell_ok(result)
+        self.assertIn("./skill/disco-livre/SKILL.md", result.stdout.splitlines())
+        self.assertNotIn("untracked-payload.sh", result.stdout)
+        self.assertNotIn("ignored-payload.sh", result.stdout)
 
 
 if __name__ == "__main__":
